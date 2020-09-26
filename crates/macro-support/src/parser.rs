@@ -1,5 +1,8 @@
 use std::cell::Cell;
+use std::char;
+use std::str::Chars;
 
+use ast::OperationKind;
 use backend::ast;
 use backend::util::{ident_ty, ShortHash};
 use backend::Diagnostic;
@@ -8,6 +11,7 @@ use quote::ToTokens;
 use shared;
 use syn;
 use syn::parse::{Parse, ParseStream, Result as SynResult};
+use syn::spanned::Spanned;
 
 thread_local!(static ATTRS: AttributeParseState = Default::default());
 
@@ -31,7 +35,7 @@ macro_rules! attrgen {
             (constructor, Constructor(Span)),
             (method, Method(Span)),
             (static_method_of, StaticMethodOf(Span, Ident)),
-            (js_namespace, JsNamespace(Span, Ident)),
+            (js_namespace, JsNamespace(Span, Vec<String>, Vec<Span>)),
             (module, Module(Span, String, Span)),
             (raw_module, RawModule(Span, String, Span)),
             (inline_js, InlineJs(Span, String, Span)),
@@ -45,17 +49,16 @@ macro_rules! attrgen {
             (readonly, Readonly(Span)),
             (js_name, JsName(Span, String, Span)),
             (js_class, JsClass(Span, String, Span)),
+            (inspectable, Inspectable(Span)),
             (is_type_of, IsTypeOf(Span, syn::Expr)),
             (extends, Extends(Span, syn::Path)),
             (vendor_prefix, VendorPrefix(Span, Ident)),
             (variadic, Variadic(Span)),
             (typescript_custom_section, TypescriptCustomSection(Span)),
+            (skip_typescript, SkipTypescript(Span)),
             (start, Start(Span)),
             (skip, Skip(Span)),
-            (prototype, Prototype(Span, syn::Type)),
-
-            // Added internally
-            (__wasm_target, WasmTarget(Span, bool)),
+            (typescript_type, TypeScriptType(Span, String, Span)),
 
             // For testing purposes only.
             (assert_no_shim, AssertNoShim(Span)),
@@ -107,6 +110,21 @@ macro_rules! methods {
                     BindgenAttr::$variant(_, s, span) => {
                         a.0.set(true);
                         Some((&s[..], *span))
+                    }
+                    _ => None,
+                })
+                .next()
+        }
+    };
+
+    (@method $name:ident, $variant:ident(Span, Vec<String>, Vec<Span>)) => {
+        fn $name(&self) -> Option<(&[String], &[Span])> {
+            self.attrs
+                .iter()
+                .filter_map(|a| match &a.1 {
+                    BindgenAttr::$variant(_, ss, spans) => {
+                        a.0.set(true);
+                        Some((&ss[..], &spans[..]))
                     }
                     _ => None,
                 })
@@ -292,6 +310,36 @@ impl Parse for BindgenAttr {
                 };
                 return Ok(BindgenAttr::$variant(attr_span, val, span))
             });
+
+            (@parser $variant:ident(Span, Vec<String>, Vec<Span>)) => ({
+                input.parse::<Token![=]>()?;
+                let input_before_parse = input.fork();
+                let (vals, spans) = match input.parse::<syn::ExprArray>() {
+                    Ok(exprs) => {
+                        let mut vals = vec![];
+                        let mut spans = vec![];
+
+                        for expr in exprs.elems.iter() {
+                            if let syn::Expr::Lit(syn::ExprLit {
+                                lit: syn::Lit::Str(ref str),
+                                ..
+                            }) = expr {
+                                vals.push(str.value());
+                                spans.push(str.span());
+                            } else {
+                                return Err(syn::Error::new(expr.span(), "expected string literals"));
+                            }
+                        }
+
+                        (vals, spans)
+                    },
+                    Err(_) => {
+                        let ident = input_before_parse.parse::<AnyIdent>()?.0;
+                        (vec![ident.to_string()], vec![ident.span()])
+                    }
+                };
+                return Ok(BindgenAttr::$variant(attr_span, vals, spans))
+            });
         }
 
         attrgen!(parsers);
@@ -340,6 +388,7 @@ impl<'a> ConvertToAst<BindgenAttrs> for &'a mut syn::ItemStruct {
             .js_name()
             .map(|s| s.0.to_string())
             .unwrap_or(self.ident.to_string());
+        let is_inspectable = attrs.inspectable().is_some();
         for (i, field) in self.fields.iter_mut().enumerate() {
             match field.vis {
                 syn::Visibility::Public(..) => {}
@@ -369,37 +418,11 @@ impl<'a> ConvertToAst<BindgenAttrs> for &'a mut syn::ItemStruct {
                 getter: Ident::new(&getter, Span::call_site()),
                 setter: Ident::new(&setter, Span::call_site()),
                 comments,
+                generate_typescript: attrs.skip_typescript().is_none(),
             });
             attrs.check_used()?;
         }
-        let prototype = attrs.prototype().cloned().unwrap_or(parse_quote!{ ::wasm_bindgen::JsValue });
-        let prototype_field = if *attrs.__wasm_target().unwrap() {
-            use syn::parse::Parser;
-            use quote::quote;
-            
-            let span  = Span::call_site();
-            let ident = Ident::new("__proto__", span.clone());
-            
-            Some(match &mut self.fields {
-                syn::Fields::Unnamed(fields) => {
-                    let index = fields.unnamed.len() as u32;
-                    fields.unnamed.push(syn::Field::parse_unnamed.parse2(quote!{ #prototype }).unwrap());
-                    syn::Member::Unnamed(syn::Index { index, span })
-                }
-                
-                syn::Fields::Named(fields) => {
-                    fields.named.push(syn::Field::parse_named.parse2(quote!{ #ident: #prototype }).unwrap());
-                    syn::Member::Named(ident)
-                }
-                
-                syn::Fields::Unit => {
-                    self.fields = syn::Fields::Named(parse_quote!{{ #ident: #prototype }});
-                    syn::Member::Named(ident)
-                }
-            })
-        } else {
-            None
-        };
+        let generate_typescript = attrs.skip_typescript().is_none();
         let comments: Vec<String> = extract_doc_comments(&self.attrs);
         attrs.check_used()?;
         Ok(ast::Struct {
@@ -407,10 +430,18 @@ impl<'a> ConvertToAst<BindgenAttrs> for &'a mut syn::ItemStruct {
             js_name,
             fields,
             comments,
-            prototype,
-            prototype_field,
+            is_inspectable,
+            generate_typescript,
         })
     }
+}
+
+fn get_ty(mut ty: &syn::Type) -> &syn::Type {
+    while let syn::Type::Group(g) = ty {
+        ty = &g.elem;
+    }
+
+    ty
 }
 
 impl<'a> ConvertToAst<(BindgenAttrs, &'a ast::ImportModule)> for syn::ForeignItemFn {
@@ -451,7 +482,7 @@ impl<'a> ConvertToAst<(BindgenAttrs, &'a ast::ImportModule)> for syn::ForeignIte
             let class = wasm.arguments.get(0).ok_or_else(|| {
                 err_span!(self, "imported methods must have at least one argument")
             })?;
-            let class = match &*class.ty {
+            let class = match get_ty(&class.ty) {
                 syn::Type::Reference(syn::TypeReference {
                     mutability: None,
                     elem,
@@ -462,7 +493,7 @@ impl<'a> ConvertToAst<(BindgenAttrs, &'a ast::ImportModule)> for syn::ForeignIte
                     "first argument of method must be a shared reference"
                 ),
             };
-            let class_name = match *class {
+            let class_name = match get_ty(class) {
                 syn::Type::Path(syn::TypePath {
                     qself: None,
                     ref path,
@@ -503,7 +534,7 @@ impl<'a> ConvertToAst<(BindgenAttrs, &'a ast::ImportModule)> for syn::ForeignIte
                 Some(ref ty) => ty,
                 _ => bail_span!(self, "constructor returns must be bare types"),
             };
-            let class_name = match *class {
+            let class_name = match get_ty(class) {
                 syn::Type::Path(syn::TypePath {
                     qself: None,
                     ref path,
@@ -574,6 +605,7 @@ impl ConvertToAst<BindgenAttrs> for syn::ForeignItemType {
             .js_name()
             .map(|s| s.0)
             .map_or_else(|| self.ident.to_string(), |s| s.to_string());
+        let typescript_type = attrs.typescript_type().map(|s| s.0.to_string());
         let is_type_of = attrs.is_type_of().cloned();
         let shim = format!("__wbg_instanceof_{}_{}", self.ident, ShortHash(&self.ident));
         let mut extends = Vec::new();
@@ -599,6 +631,7 @@ impl ConvertToAst<BindgenAttrs> for syn::ForeignItemType {
             instanceof_shim: shim,
             is_type_of,
             rust_name: self.ident,
+            typescript_type,
             js_name,
             extends,
             vendor_prefixes,
@@ -701,9 +734,9 @@ fn function_from_decl(
             Some(i) => i,
             None => return t,
         };
-        let path = match t {
-            syn::Type::Path(syn::TypePath { qself: None, path }) => path,
-            other => return other,
+        let path = match get_ty(&t) {
+            syn::Type::Path(syn::TypePath { qself: None, path }) => path.clone(),
+            other => return other.clone(),
         };
         let new_path = if path.segments.len() == 1 && path.segments[0].ident == "Self" {
             self_ty.clone().into()
@@ -748,7 +781,16 @@ fn function_from_decl(
 
     let (name, name_span, renamed_via_js_name) =
         if let Some((js_name, js_name_span)) = opts.js_name() {
-            (js_name.to_string(), js_name_span, true)
+            let kind = operation_kind(&opts);
+            let prefix = match kind {
+                OperationKind::Setter(_) => "set_",
+                _ => "",
+            };
+            (
+                format!("{}{}", prefix, js_name.to_string()),
+                js_name_span,
+                true,
+            )
         } else {
             (decl_name.to_string(), decl_name.span(), false)
         };
@@ -762,6 +804,7 @@ fn function_from_decl(
             rust_attrs: attrs,
             rust_vis: vis,
             r#async: sig.asyncness.is_some(),
+            generate_typescript: opts.skip_typescript().is_none(),
         },
         method_self,
     ))
@@ -841,12 +884,12 @@ impl<'a> MacroParse<(Option<BindgenAttrs>, &'a mut TokenStream)> for syn::Item {
                 };
                 f.macro_parse(program, opts)?;
             }
-            syn::Item::Enum(e) => {
-                if let Some(opts) = opts {
-                    opts.check_used()?;
-                }
-                e.to_tokens(tokens);
-                e.macro_parse(program, ())?;
+            syn::Item::Enum(mut e) => {
+                let opts = match opts {
+                    Some(opts) => opts,
+                    None => BindgenAttrs::find(&mut e.attrs)?,
+                };
+                e.macro_parse(program, (tokens, opts))?;
             }
             syn::Item::Const(mut c) => {
                 let opts = match opts {
@@ -895,11 +938,11 @@ impl<'a> MacroParse<BindgenAttrs> for &'a mut syn::ItemImpl {
                 "#[wasm_bindgen] generic impls aren't supported"
             );
         }
-        let name = match *self.self_ty {
+        let name = match get_ty(&self.self_ty) {
             syn::Type::Path(syn::TypePath {
                 qself: None,
                 ref path,
-            }) => extract_path_ident(path)?,
+            }) => path,
             _ => bail_span!(
                 self.self_ty,
                 "unsupported self type in #[wasm_bindgen] impl"
@@ -927,7 +970,7 @@ impl<'a> MacroParse<BindgenAttrs> for &'a mut syn::ItemImpl {
 // then go for the rest.
 fn prepare_for_impl_recursion(
     item: &mut syn::ImplItem,
-    class: &Ident,
+    class: &syn::Path,
     impl_opts: &BindgenAttrs,
 ) -> Result<(), Diagnostic> {
     let method = match item {
@@ -953,10 +996,12 @@ fn prepare_for_impl_recursion(
         other => bail_span!(other, "failed to parse this item as a known item"),
     };
 
+    let ident = extract_path_ident(class)?;
+
     let js_class = impl_opts
         .js_class()
         .map(|s| s.0.to_string())
-        .unwrap_or(class.to_string());
+        .unwrap_or(ident.to_string());
 
     let wasm_target = impl_opts.__wasm_target().unwrap();
     method.attrs.insert(
@@ -1066,18 +1111,89 @@ impl<'a, 'b> MacroParse<(&'a Ident, &'a str, bool)> for &'b mut syn::ImplItemMet
     }
 }
 
-impl MacroParse<()> for syn::ItemEnum {
-    fn macro_parse(self, program: &mut ast::Program, (): ()) -> Result<(), Diagnostic> {
+fn import_enum(enum_: syn::ItemEnum, program: &mut ast::Program) -> Result<(), Diagnostic> {
+    let mut variants = vec![];
+    let mut variant_values = vec![];
+
+    for v in enum_.variants.iter() {
+        match v.fields {
+            syn::Fields::Unit => (),
+            _ => bail_span!(v.fields, "only C-Style enums allowed with #[wasm_bindgen]"),
+        }
+
+        match &v.discriminant {
+            Some((
+                _,
+                syn::Expr::Lit(syn::ExprLit {
+                    attrs: _,
+                    lit: syn::Lit::Str(str_lit),
+                }),
+            )) => {
+                variants.push(v.ident.clone());
+                variant_values.push(str_lit.value());
+            }
+            Some((_, expr)) => bail_span!(
+                expr,
+                "enums with #[wasm_bidngen] cannot mix string and non-string values",
+            ),
+            None => {
+                bail_span!(v, "all variants must have a value");
+            }
+        }
+    }
+
+    program.imports.push(ast::Import {
+        module: ast::ImportModule::None,
+        js_namespace: None,
+        kind: ast::ImportKind::Enum(ast::ImportEnum {
+            vis: enum_.vis,
+            name: enum_.ident,
+            variants,
+            variant_values,
+            rust_attrs: enum_.attrs,
+        }),
+    });
+
+    Ok(())
+}
+
+impl<'a> MacroParse<(&'a mut TokenStream, BindgenAttrs)> for syn::ItemEnum {
+    fn macro_parse(
+        self,
+        program: &mut ast::Program,
+        (tokens, opts): (&'a mut TokenStream, BindgenAttrs),
+    ) -> Result<(), Diagnostic> {
+        if self.variants.len() == 0 {
+            bail_span!(self, "cannot export empty enums to JS");
+        }
+        let generate_typescript = opts.skip_typescript().is_none();
+
+        // Check if the first value is a string literal
+        match self.variants[0].discriminant {
+            Some((
+                _,
+                syn::Expr::Lit(syn::ExprLit {
+                    attrs: _,
+                    lit: syn::Lit::Str(_),
+                }),
+            )) => {
+                opts.check_used()?;
+                return import_enum(self, program);
+            }
+            _ => {}
+        }
+        let js_name = opts
+            .js_name()
+            .map(|s| s.0)
+            .map_or_else(|| self.ident.to_string(), |s| s.to_string());
+        opts.check_used()?;
+
+        let has_discriminant = self.variants[0].discriminant.is_some();
+
         match self.vis {
             syn::Visibility::Public(_) => {}
             _ => bail_span!(self, "only public enums are allowed with #[wasm_bindgen]"),
         }
-
-        if self.variants.len() == 0 {
-            bail_span!(self, "cannot export empty enums to JS");
-        }
-
-        let has_discriminant = self.variants[0].discriminant.is_some();
 
         let variants = self
             .variants
@@ -1106,18 +1222,16 @@ impl MacroParse<()> for syn::ItemEnum {
                             attrs: _,
                             lit: syn::Lit::Int(int_lit),
                         }),
-                    )) => {
-                        match int_lit.base10_digits().parse::<u32>() {
-                            Ok(v) => v,
-                            Err(_) => {
-                                bail_span!(
-                                    int_lit,
-                                    "enums with #[wasm_bindgen] can only support \
-                                     numbers that can be represented as u32"
-                                );
-                            }
+                    )) => match int_lit.base10_digits().parse::<u32>() {
+                        Ok(v) => v,
+                        Err(_) => {
+                            bail_span!(
+                                int_lit,
+                                "enums with #[wasm_bindgen] can only support \
+                                 numbers that can be represented as u32"
+                            );
                         }
-                    }
+                    },
                     None => i as u32,
                     Some((_, expr)) => bail_span!(
                         expr,
@@ -1126,9 +1240,11 @@ impl MacroParse<()> for syn::ItemEnum {
                     ),
                 };
 
+                let comments = extract_doc_comments(&v.attrs);
                 Ok(ast::Variant {
                     name: v.ident.clone(),
                     value,
+                    comments,
                 })
             })
             .collect::<Result<Vec<_>, Diagnostic>>()?;
@@ -1151,11 +1267,16 @@ impl MacroParse<()> for syn::ItemEnum {
         }
 
         let comments = extract_doc_comments(&self.attrs);
+
+        self.to_tokens(tokens);
+
         program.enums.push(ast::Enum {
-            name: self.ident,
+            rust_name: self.ident,
+            js_name,
             variants,
             comments,
             hole,
+            generate_typescript,
         });
         Ok(())
     }
@@ -1248,7 +1369,7 @@ impl MacroParse<ast::ImportModule> for syn::ForeignItem {
             };
             BindgenAttrs::find(attrs)?
         };
-        let js_namespace = item_opts.js_namespace().cloned();
+        let js_namespace = item_opts.js_namespace().map(|(s, _)| s.to_owned());
         let kind = match self {
             syn::ForeignItem::Fn(f) => f.convert((item_opts, &module))?,
             syn::ForeignItem::Type(t) => t.convert(item_opts)?,
@@ -1272,7 +1393,7 @@ fn extract_first_ty_param(ty: Option<&syn::Type>) -> Result<Option<syn::Type>, D
         Some(t) => t,
         None => return Ok(None),
     };
-    let path = match *t {
+    let path = match *get_ty(&t) {
         syn::Type::Path(syn::TypePath {
             qself: None,
             ref path,
@@ -1295,7 +1416,7 @@ fn extract_first_ty_param(ty: Option<&syn::Type>) -> Result<Option<syn::Type>, D
         syn::GenericArgument::Type(t) => t,
         other => bail_span!(other, "must be a type parameter"),
     };
-    match ty {
+    match get_ty(&ty) {
         syn::Type::Tuple(t) if t.elems.len() == 0 => return Ok(None),
         _ => {}
     }
@@ -1314,9 +1435,8 @@ fn extract_doc_comments(attrs: &[syn::Attribute]) -> Vec<String> {
                     // We want to filter out any Puncts so just grab the Literals
                     a.tokens.clone().into_iter().filter_map(|t| match t {
                         TokenTree::Literal(lit) => {
-                            // this will always return the quoted string, we deal with
-                            // that in the cli when we read in the comments
-                            Some(lit.to_string())
+                            let quoted = lit.to_string();
+                            Some(try_unescape(&quoted).unwrap_or_else(|| quoted))
                         }
                         _ => None,
                     }),
@@ -1330,6 +1450,76 @@ fn extract_doc_comments(attrs: &[syn::Attribute]) -> Vec<String> {
             acc.extend(a);
             acc
         })
+}
+
+// Unescapes a quoted string. char::escape_debug() was used to escape the text.
+fn try_unescape(s: &str) -> Option<String> {
+    if s.is_empty() {
+        return Some(String::new());
+    }
+    let mut result = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    for i in 0.. {
+        let c = match chars.next() {
+            Some(c) => c,
+            None => {
+                if result.ends_with('"') {
+                    result.pop();
+                }
+                return Some(result);
+            }
+        };
+        if i == 0 && c == '"' {
+            // ignore it
+        } else if c == '\\' {
+            let c = chars.next()?;
+            match c {
+                't' => result.push('\t'),
+                'r' => result.push('\r'),
+                'n' => result.push('\n'),
+                '\\' | '\'' | '"' => result.push(c),
+                'u' => {
+                    if chars.next() != Some('{') {
+                        return None;
+                    }
+                    let (c, next) = unescape_unicode(&mut chars)?;
+                    result.push(c);
+                    if next != '}' {
+                        return None;
+                    }
+                }
+                _ => return None,
+            }
+        } else {
+            result.push(c);
+        }
+    }
+    None
+}
+
+fn unescape_unicode(chars: &mut Chars) -> Option<(char, char)> {
+    let mut value = 0;
+    for i in 0..7 {
+        let c = chars.next()?;
+        let num = if c >= '0' && c <= '9' {
+            c as u32 - '0' as u32
+        } else if c >= 'a' && c <= 'f' {
+            c as u32 - 'a' as u32 + 10
+        } else if c >= 'A' && c <= 'F' {
+            c as u32 - 'A' as u32 + 10
+        } else {
+            if i == 0 {
+                return None;
+            }
+            let decoded = char::from_u32(value)?;
+            return Some((decoded, c));
+        };
+        if i >= 6 {
+            return None;
+        }
+        value = (value << 4) | num;
+    }
+    None
 }
 
 /// Check there are no lifetimes on the function.
@@ -1364,20 +1554,21 @@ fn assert_not_variadic(attrs: &BindgenAttrs) -> Result<(), Diagnostic> {
     Ok(())
 }
 
-/// If the path is a single ident, return it.
+/// Extracts the last ident from the path
 fn extract_path_ident(path: &syn::Path) -> Result<Ident, Diagnostic> {
-    if path.leading_colon.is_some() {
-        bail_span!(path, "global paths are not supported yet");
+    for segment in path.segments.iter() {
+        match segment.arguments {
+            syn::PathArguments::None => {}
+            _ => bail_span!(path, "paths with type parameters are not supported yet"),
+        }
     }
-    if path.segments.len() != 1 {
-        bail_span!(path, "multi-segment paths are not supported yet");
+
+    match path.segments.last() {
+        Some(value) => Ok(value.ident.clone()),
+        None => {
+            bail_span!(path, "empty idents are not supported");
+        }
     }
-    let value = &path.segments[0];
-    match value.arguments {
-        syn::PathArguments::None => {}
-        _ => bail_span!(path, "paths with type parameters are not supported yet"),
-    }
-    Ok(value.ident.clone())
 }
 
 pub fn reset_attrs_used() {

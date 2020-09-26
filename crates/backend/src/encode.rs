@@ -53,8 +53,8 @@ impl Interner {
     fn intern_str(&self, s: &str) -> &str {
         // NB: eventually this could be used to intern `s` to only allocate one
         // copy, but for now let's just "transmute" `s` to have the same
-        // lifetmie as this struct itself (which is our main goal here)
-        bumpalo::collections::String::from_str_in(s, &self.bump).into_bump_str()
+        // lifetime as this struct itself (which is our main goal here)
+        self.bump.alloc_str(s)
     }
 
     /// Given an import to a local module `id` this generates a unique module id
@@ -198,7 +198,7 @@ fn shared_function<'a>(func: &'a ast::Function, _intern: &'a Interner) -> Functi
         .enumerate()
         .map(|(idx, arg)| {
             if let syn::Pat::Ident(x) = &*arg.pat {
-                return x.ident.to_string()
+                return x.ident.to_string();
             }
             format!("arg{}", idx)
         })
@@ -206,18 +206,20 @@ fn shared_function<'a>(func: &'a ast::Function, _intern: &'a Interner) -> Functi
     Function {
         arg_names,
         name: &func.name,
+        generate_typescript: func.generate_typescript,
     }
 }
 
 fn shared_enum<'a>(e: &'a ast::Enum, intern: &'a Interner) -> Enum<'a> {
     Enum {
-        name: intern.intern(&e.name),
+        name: &e.js_name,
         variants: e
             .variants
             .iter()
             .map(|v| shared_variant(v, intern))
             .collect(),
         comments: e.comments.iter().map(|s| &**s).collect(),
+        generate_typescript: e.generate_typescript,
     }
 }
 
@@ -225,6 +227,7 @@ fn shared_variant<'a>(v: &'a ast::Variant, intern: &'a Interner) -> EnumVariant<
     EnumVariant {
         name: intern.intern(&v.name),
         value: v.value,
+        comments: v.comments.iter().map(|s| &**s).collect(),
     }
 }
 
@@ -238,8 +241,8 @@ fn shared_import<'a>(i: &'a ast::Import, intern: &'a Interner, types: &HashSet<I
             ast::ImportModule::Inline(idx, _) => ImportModule::Inline(*idx as u32),
             ast::ImportModule::None => ImportModule::None,
         },
-        js_namespace: i.js_namespace.as_ref().map(|s| intern.intern(s)),
-        kind: shared_import_kind(&i.kind, intern, i.js_namespace.as_ref().filter(|ns| types.contains(ns)))?,
+        js_namespace: i.js_namespace.clone(),
+        kind: shared_import_kind(&i.kind, intern)?,
     })
 }
 
@@ -322,7 +325,8 @@ fn shared_struct<'a>(s: &'a ast::Struct, intern: &'a Interner) -> Struct<'a> {
             .map(|s| shared_struct_field(s, intern))
             .collect(),
         comments: s.comments.iter().map(|s| &**s).collect(),
-        prototype: TypeReference(s.prototype.clone()),
+        is_inspectable: s.is_inspectable,
+        generate_typescript: s.generate_typescript,
     }
 }
 
@@ -334,6 +338,7 @@ fn shared_struct_field<'a>(s: &'a ast::StructField, intern: &'a Interner) -> Str
         },
         readonly: s.readonly,
         comments: s.comments.iter().map(|s| &**s).collect(),
+        generate_typescript: s.generate_typescript,
     }
 }
 

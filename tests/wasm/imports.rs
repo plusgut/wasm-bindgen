@@ -57,11 +57,51 @@ extern "C" {
     fn static_method_of_right_this();
 
     static STATIC_STRING: String;
+
+    #[derive(Clone)]
+    type PassOutOptionUndefined;
+    fn get_some_val() -> PassOutOptionUndefined;
+    #[wasm_bindgen(js_name = "receive_undefined")]
+    fn receive_undefined_ref(arg: Option<&PassOutOptionUndefined>);
+    #[wasm_bindgen(js_name = "receive_undefined")]
+    fn receive_undefined_owned(arg: Option<PassOutOptionUndefined>);
+    #[wasm_bindgen(js_name = "receive_some")]
+    fn receive_some_ref(arg: Option<&PassOutOptionUndefined>);
+    #[wasm_bindgen(js_name = "receive_some")]
+    fn receive_some_owned(arg: Option<PassOutOptionUndefined>);
+
+    #[wasm_bindgen(js_namespace = Math)]
+    fn func_from_module_math(a: i32) -> i32;
+
+    #[wasm_bindgen(js_namespace = Number)]
+    fn func_from_module_number() -> f64;
+
+    #[wasm_bindgen(js_name = "same_name_from_import")]
+    fn same_name_from_import_1(s: i32) -> i32;
+
+    #[wasm_bindgen(js_namespace = same_js_namespace_from_module)]
+    fn func_from_module_1_same_js_namespace(s: i32) -> i32;
+}
+
+#[wasm_bindgen(module = "tests/wasm/imports_2.js")]
+extern "C" {
+    #[wasm_bindgen(js_name = "same_name_from_import")]
+    fn same_name_from_import_2(s: i32) -> i32;
+
+    #[wasm_bindgen(js_namespace = same_js_namespace_from_module)]
+    fn func_from_module_2_same_js_namespace(s: i32) -> i32;
 }
 
 #[wasm_bindgen]
 extern "C" {
     fn parseInt(a: &str) -> u32;
+
+    #[wasm_bindgen(js_namespace = Math, js_name = "sqrt")]
+    fn func_from_global_math(s: f64) -> f64;
+
+    type Number;
+    #[wasm_bindgen(getter, static_method_of = Number, js_name = "NAN")]
+    fn static_getter_from_global_number() -> f64;
 }
 
 #[wasm_bindgen_test]
@@ -252,4 +292,40 @@ fn static_string_ok() {
 #[wasm_bindgen_test]
 fn static_method_of_has_right_this() {
     StaticMethodCheck::static_method_of_right_this();
+}
+
+#[wasm_bindgen_test]
+fn pass_out_options_as_undefined() {
+    receive_undefined_ref(None);
+    receive_undefined_ref(None);
+    receive_undefined_owned(None);
+    receive_undefined_owned(None);
+
+    let v = get_some_val();
+    receive_some_ref(Some(&v));
+    receive_some_ref(Some(&v));
+    receive_some_owned(Some(v.clone()));
+    receive_some_owned(Some(v));
+}
+
+#[wasm_bindgen_test]
+fn func_from_global_and_module_same_js_namespace() {
+    assert_eq!(func_from_global_math(4.0), 2.0);
+    assert_eq!(func_from_module_math(2), 4);
+}
+#[wasm_bindgen_test]
+fn getter_from_global_and_module_same_name() {
+    assert!(Number::static_getter_from_global_number().is_nan());
+    assert_eq!(func_from_module_number(), 3.0);
+}
+#[wasm_bindgen_test]
+fn func_from_two_modules_same_js_name() {
+    assert_eq!(same_name_from_import_1(1), 3);
+    assert_eq!(same_name_from_import_2(1), 4);
+}
+
+#[wasm_bindgen_test]
+fn func_from_two_modules_same_js_namespace() {
+    assert_eq!(func_from_module_1_same_js_namespace(2), 10);
+    assert_eq!(func_from_module_2_same_js_namespace(2), 12);
 }

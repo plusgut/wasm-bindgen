@@ -36,7 +36,7 @@ impl AtomicWaker {
         // the corresponding `waitAsync` that was waiting for the transition
         // from SLEEPING to AWAKE.
         unsafe {
-            core::arch::wasm32::atomic_notify(
+            core::arch::wasm32::memory_atomic_notify(
                 &self.state as *const AtomicI32 as *mut i32,
                 1, // Number of threads to notify
             );
@@ -130,7 +130,7 @@ impl Task {
             // resources associated with the future ASAP.
             Poll::Ready(()) => {
                 *borrow = None;
-            },
+            }
 
             // Unlike `singlethread.rs` we are responsible for ensuring there's
             // a closure to handle the notification that a Future is ready. In
@@ -149,7 +149,7 @@ impl Task {
             // * `AWAKE` - the Promise will immediately be resolved and
             //   we'll execute the work on the next microtask queue.
             Poll::Pending => {
-                wait_async(&self.atomic.state, SLEEPING).then(&inner.closure);
+                drop(wait_async(&self.atomic.state, SLEEPING).then(&inner.closure));
             }
         }
     }

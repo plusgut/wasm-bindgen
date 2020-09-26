@@ -30,7 +30,8 @@ tys! {
     REFMUT
     SLICE
     VECTOR
-    ANYREF
+    EXTERNREF
+    NAMED_EXTERNREF
     ENUM
     RUST_STRUCT
     CHAR
@@ -41,7 +42,7 @@ tys! {
     THIS_CALLBACK
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Descriptor {
     I8,
     U8,
@@ -63,7 +64,8 @@ pub enum Descriptor {
     Vector(Box<Descriptor>),
     CachedString,
     String,
-    Anyref,
+    Externref,
+    NamedExternref(String),
     Enum { hole: u32 },
     RustStruct(String),
     Char,
@@ -73,14 +75,14 @@ pub enum Descriptor {
     ThisCallback,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Function {
     pub arguments: Vec<Descriptor>,
     pub shim_idx: u32,
     pub ret: Descriptor,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Closure {
     pub shim_idx: u32,
     pub dtor_idx: u32,
@@ -102,7 +104,7 @@ pub enum VectorKind {
     F32,
     F64,
     String,
-    Anyref,
+    Externref,
 }
 
 impl Descriptor {
@@ -135,13 +137,15 @@ impl Descriptor {
             OPTIONAL => Descriptor::Option(Box::new(Descriptor::_decode(data, clamped))),
             CACHED_STRING => Descriptor::CachedString,
             STRING => Descriptor::String,
-            ANYREF => Descriptor::Anyref,
+            EXTERNREF => Descriptor::Externref,
             ENUM => Descriptor::Enum { hole: get(data) },
             RUST_STRUCT => {
-                let name = (0..get(data))
-                    .map(|_| char::from_u32(get(data)).unwrap())
-                    .collect();
+                let name = get_string(data);
                 Descriptor::RustStruct(name)
+            }
+            NAMED_EXTERNREF => {
+                let name = get_string(data);
+                Descriptor::NamedExternref(name)
             }
             CHAR => Descriptor::Char,
             UNIT => Descriptor::Unit,
@@ -194,7 +198,7 @@ impl Descriptor {
             Descriptor::U64 => Some(VectorKind::U64),
             Descriptor::F32 => Some(VectorKind::F32),
             Descriptor::F64 => Some(VectorKind::F64),
-            Descriptor::Anyref => Some(VectorKind::Anyref),
+            Descriptor::Externref => Some(VectorKind::Externref),
             _ => None,
         }
     }
@@ -204,6 +208,12 @@ fn get(a: &mut &[u32]) -> u32 {
     let ret = a[0];
     *a = &a[1..];
     ret
+}
+
+fn get_string(data: &mut &[u32]) -> String {
+    (0..get(data))
+        .map(|_| char::from_u32(get(data)).unwrap())
+        .collect()
 }
 
 impl Closure {
@@ -250,7 +260,7 @@ impl VectorKind {
             VectorKind::U64 => "BigUint64Array",
             VectorKind::F32 => "Float32Array",
             VectorKind::F64 => "Float64Array",
-            VectorKind::Anyref => "any[]",
+            VectorKind::Externref => "any[]",
         }
     }
 
@@ -268,7 +278,7 @@ impl VectorKind {
             VectorKind::U64 => 8,
             VectorKind::F32 => 4,
             VectorKind::F64 => 8,
-            VectorKind::Anyref => 4,
+            VectorKind::Externref => 4,
         }
     }
 }

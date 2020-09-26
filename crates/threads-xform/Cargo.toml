@@ -1,6 +1,6 @@
 [package]
 name = "wasm-bindgen-threads-xform"
-version = "0.2.52"
+version = "0.2.68"
 authors = ["The wasm-bindgen Developers"]
 license = "MIT/Apache-2.0"
 repository = "https://github.com/rustwasm/wasm-bindgen/tree/master/crates/threads-xform"
@@ -12,6 +12,6 @@ Support for threading-related transformations in wasm-bindgen
 edition = "2018"
 
 [dependencies]
-failure = "0.1"
-walrus = "0.12.0"
-wasm-bindgen-wasm-conventions = { path = "../wasm-conventions", version = "=0.2.52" }
+anyhow = "1.0"
+walrus = "0.18.0"
+wasm-bindgen-wasm-conventions = { path = "../wasm-conventions", version = "=0.2.68" }

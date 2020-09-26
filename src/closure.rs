@@ -48,7 +48,7 @@ use crate::UnwrapThrowExt;
 ///
 /// #[wasm_bindgen]
 /// extern "C" {
-///     fn setInterval(closure: &Closure<FnMut()>, time: u32) -> i32;
+///     fn setInterval(closure: &Closure<dyn FnMut()>, time: u32) -> i32;
 ///     fn clearInterval(id: i32);
 ///
 ///     #[wasm_bindgen(js_namespace = console)]
@@ -58,7 +58,7 @@ use crate::UnwrapThrowExt;
 /// #[wasm_bindgen]
 /// pub struct IntervalHandle {
 ///     interval_id: i32,
-///     _closure: Closure<FnMut()>,
+///     _closure: Closure<dyn FnMut()>,
 /// }
 /// 
 /// #[wasm_bindgen]
@@ -94,8 +94,24 @@ use crate::UnwrapThrowExt;
 /// }
 ///
 /// #[wasm_bindgen]
-/// pub fn run() -> WasmType<IntervalHandle> {
-///     IntervalHandle::new()
+/// pub fn run() -> IntervalHandle {
+///     // First up we use `Closure::wrap` to wrap up a Rust closure and create
+///     // a JS closure.
+///     let cb = Closure::wrap(Box::new(|| {
+///         log("interval elapsed!");
+///     }) as Box<dyn FnMut()>);
+///
+///     // Next we pass this via reference to the `setInterval` function, and
+///     // `setInterval` gets a handle to the corresponding JS closure.
+///     let interval_id = setInterval(&cb, 1_000);
+///
+///     // If we were to drop `cb` here it would cause an exception to be raised
+///     // whenever the interval elapses. Instead we *return* our handle back to JS
+///     // so JS can decide when to cancel the interval and deallocate the closure.
+///     IntervalHandle {
+///         interval_id,
+///         _closure: cb,
+///     }
 /// }
 /// ```
 ///
@@ -111,7 +127,7 @@ use crate::UnwrapThrowExt;
 /// #[wasm_bindgen]
 /// pub struct IntervalHandle {
 ///     interval_id: i32,
-///     _closure: Closure<FnMut()>,
+///     _closure: Closure<dyn FnMut()>,
 /// }
 ///
 /// impl Drop for IntervalHandle {
@@ -125,7 +141,7 @@ use crate::UnwrapThrowExt;
 /// pub fn run() -> Result<IntervalHandle, JsValue> {
 ///     let cb = Closure::wrap(Box::new(|| {
 ///         web_sys::console::log_1(&"inverval elapsed!".into());
-///     }) as Box<FnMut()>);
+///     }) as Box<dyn FnMut()>);
 ///
 ///     let window = web_sys::window().unwrap();
 ///     let interval_id = window.set_interval_with_callback_and_timeout_and_arguments_0(
@@ -154,7 +170,7 @@ use crate::UnwrapThrowExt;
 ///
 /// #[wasm_bindgen]
 /// extern "C" {
-///     fn requestAnimationFrame(closure: &Closure<FnMut()>) -> u32;
+///     fn requestAnimationFrame(closure: &Closure<dyn FnMut()>) -> u32;
 ///     fn cancelAnimationFrame(id: u32);
 ///
 ///     #[wasm_bindgen(js_namespace = console)]
@@ -164,7 +180,7 @@ use crate::UnwrapThrowExt;
 /// #[wasm_bindgen]
 /// pub struct AnimationFrameHandle {
 ///     animation_id: u32,
-///     _closure: Closure<FnMut()>,
+///     _closure: Closure<dyn FnMut()>,
 /// }
 /// 
 /// #[wasm_bindgen]
@@ -376,33 +392,44 @@ where
         }
     }
 
-    /// Leaks this `Closure` to ensure it remains valid for the duration of the
-    /// entire program.
+    /// Release memory management of this closure from Rust to the JS GC.
     ///
-    /// > **Note**: this function will leak memory. It should be used sparingly
-    /// > to ensure the memory leak doesn't affect the program too much.
+    /// When a `Closure` is dropped it will release the Rust memory and
+    /// invalidate the associated JS closure, but this isn't always desired.
+    /// Some callbacks are alive for the entire duration of the program or for a
+    /// lifetime dynamically managed by the JS GC. This function can be used
+    /// to drop this `Closure` while keeping the associated JS function still
+    /// valid.
     ///
-    /// When a `Closure` is dropped it will invalidate the associated JS
-    /// closure, but this isn't always desired. Some callbacks are alive for
-    /// the entire duration of the program, so this can be used to conveniently
-    /// leak this instance of `Closure` while performing as much internal
-    /// cleanup as it can.
+    /// By default this function will leak memory. This can be dangerous if this
+    /// function is called many times in an application because the memory leak
+    /// will overwhelm the page quickly and crash the wasm.
+    ///
+    /// If the browser, however, supports weak references, then this function
+    /// will not leak memory. Instead the Rust memory will be reclaimed when the
+    /// JS closure is GC'd. Weak references are not enabled by default since
+    /// they're still a proposal for the JS standard. They can be enabled with
+    /// `WASM_BINDGEN_WEAKREF=1` when running `wasm-bindgen`, however.
+    pub fn into_js_value(self) -> JsValue {
+        let idx = self.js.idx;
+        mem::forget(self);
+        JsValue::_new(idx)
+    }
+
+    /// Same as `into_js_value`, but doesn't return a value.
     pub fn forget(self) {
-        unsafe {
-            super::__wbindgen_cb_forget(self.js.idx);
-            mem::forget(self);
-        }
+        drop(self.into_js_value());
     }
 }
 
 // NB: we use a specific `T` for this `Closure<T>` impl block to avoid every
 // call site having to provide an explicit, turbo-fished type like
-// `Closure::<FnOnce()>::once(...)`.
+// `Closure::<dyn FnOnce()>::once(...)`.
 impl Closure<dyn FnOnce()> {
     /// Create a `Closure` from a function that can only be called once.
     ///
     /// Since we have no way of enforcing that JS cannot attempt to call this
-    /// `FnOne(A...) -> R` more than once, this produces a `Closure<FnMut(A...)
+    /// `FnOne(A...) -> R` more than once, this produces a `Closure<dyn FnMut(A...)
     /// -> R>` that will dynamically throw a JavaScript error if called more
     /// than once.
     ///
@@ -424,7 +451,7 @@ impl Closure<dyn FnOnce()> {
     ///
     /// // Create a `Closure` from `f`. Note that the `Closure`'s type parameter
     /// // is `FnMut`, even though `f` is `FnOnce`.
-    /// let closure: Closure<FnMut() -> String> = Closure::once(f);
+    /// let closure: Closure<dyn FnMut() -> String> = Closure::once(f);
     /// ```
     pub fn once<F, A, R>(fn_once: F) -> Closure<F::FnMut>
     where
@@ -484,7 +511,7 @@ where
     T: WasmClosure + ?Sized,
 {
     fn describe() {
-        inform(ANYREF);
+        inform(EXTERNREF);
     }
 }
 
@@ -662,7 +689,7 @@ macro_rules! doit {
             }
         }
 
-        #[allow(non_snake_case)]
+        #[allow(non_snake_case, unused_parens)]
         impl<T, $($var,)* R> WasmClosureFnOnce<($($var),*), R> for T
             where T: 'static + FnOnce($($var),*) -> R,
                   $($var: FromWasmAbi + 'static,)*
@@ -733,8 +760,9 @@ doit! {
 // duplicate.
 
 unsafe impl<A, R> WasmClosure for dyn Fn(&A) -> R
-    where A: RefFromWasmAbi,
-          R: ReturnWasmAbi + 'static,
+where
+    A: RefFromWasmAbi,
+    R: ReturnWasmAbi + 'static,
 {
     fn describe() {
         #[allow(non_snake_case)]
@@ -750,8 +778,7 @@ unsafe impl<A, R> WasmClosure for dyn Fn(&A) -> R
             // convert `ret` as it may throw (for `Result`, for
             // example)
             let ret = {
-                let f: *const dyn Fn(&A) -> R =
-                    FatPtr { fields: (a, b) }.ptr;
+                let f: *const dyn Fn(&A) -> R = FatPtr { fields: (a, b) }.ptr;
                 let arg = <A as RefFromWasmAbi>::ref_from_abi(arg);
                 (*f)(&*arg)
             };
@@ -760,17 +787,14 @@ unsafe impl<A, R> WasmClosure for dyn Fn(&A) -> R
 
         inform(invoke::<A, R> as u32);
 
-        unsafe extern fn destroy<A: RefFromWasmAbi, R: ReturnWasmAbi>(
-            a: usize,
-            b: usize,
-        ) {
+        unsafe extern "C" fn destroy<A: RefFromWasmAbi, R: ReturnWasmAbi>(a: usize, b: usize) {
             // See `Fn()` above for why we simply return
             if a == 0 {
                 return;
             }
-            drop(Box::from_raw(FatPtr::<dyn Fn(&A) -> R> {
-                fields: (a, b)
-            }.ptr));
+            drop(Box::from_raw(
+                FatPtr::<dyn Fn(&A) -> R> { fields: (a, b) }.ptr,
+            ));
         }
         inform(destroy::<A, R> as u32);
 
@@ -779,8 +803,9 @@ unsafe impl<A, R> WasmClosure for dyn Fn(&A) -> R
 }
 
 unsafe impl<A, R> WasmClosure for dyn FnMut(&A) -> R
-    where A: RefFromWasmAbi,
-          R: ReturnWasmAbi + 'static,
+where
+    A: RefFromWasmAbi,
+    R: ReturnWasmAbi + 'static,
 {
     fn describe() {
         #[allow(non_snake_case)]
@@ -796,8 +821,7 @@ unsafe impl<A, R> WasmClosure for dyn FnMut(&A) -> R
             // convert `ret` as it may throw (for `Result`, for
             // example)
             let ret = {
-                let f: *const dyn FnMut(&A) -> R =
-                    FatPtr { fields: (a, b) }.ptr;
+                let f: *const dyn FnMut(&A) -> R = FatPtr { fields: (a, b) }.ptr;
                 let f = f as *mut dyn FnMut(&A) -> R;
                 let arg = <A as RefFromWasmAbi>::ref_from_abi(arg);
                 (*f)(&*arg)
@@ -807,17 +831,14 @@ unsafe impl<A, R> WasmClosure for dyn FnMut(&A) -> R
 
         inform(invoke::<A, R> as u32);
 
-        unsafe extern fn destroy<A: RefFromWasmAbi, R: ReturnWasmAbi>(
-            a: usize,
-            b: usize,
-        ) {
+        unsafe extern "C" fn destroy<A: RefFromWasmAbi, R: ReturnWasmAbi>(a: usize, b: usize) {
             // See `Fn()` above for why we simply return
             if a == 0 {
                 return;
             }
-            drop(Box::from_raw(FatPtr::<dyn FnMut(&A) -> R> {
-                fields: (a, b)
-            }.ptr));
+            drop(Box::from_raw(
+                FatPtr::<dyn FnMut(&A) -> R> { fields: (a, b) }.ptr,
+            ));
         }
         inform(destroy::<A, R> as u32);
 
@@ -827,9 +848,10 @@ unsafe impl<A, R> WasmClosure for dyn FnMut(&A) -> R
 
 #[allow(non_snake_case)]
 impl<T, A, R> WasmClosureFnOnce<(&A,), R> for T
-    where T: 'static + FnOnce(&A) -> R,
-          A: RefFromWasmAbi + 'static,
-          R: ReturnWasmAbi + 'static
+where
+    T: 'static + FnOnce(&A) -> R,
+    A: RefFromWasmAbi + 'static,
+    R: ReturnWasmAbi + 'static,
 {
     type FnMut = dyn FnMut(&A) -> R;
 
@@ -842,8 +864,8 @@ impl<T, A, R> WasmClosureFnOnce<(&A,), R> for T
     }
 
     fn into_js_function(self) -> JsValue {
-        use std::rc::Rc;
         use crate::__rt::WasmRefCell;
+        use std::rc::Rc;
 
         let mut me = Some(self);
 

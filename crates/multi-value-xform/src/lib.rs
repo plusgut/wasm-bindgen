@@ -108,23 +108,27 @@
 ///   return pointer parameter that will be removed. The `Vec<walrus::ValType>`
 ///   is the new result type that will be returned directly instead of via the
 ///   return pointer.
+///
+/// Returns a list of wrappers which have multi value signatures and call the
+/// corresponding element in the `to_xform` list.
 pub fn run(
     module: &mut walrus::Module,
     memory: walrus::MemoryId,
     shadow_stack_pointer: walrus::GlobalId,
-    to_xform: &[(walrus::ExportId, usize, &[walrus::ValType])],
-) -> Result<(), failure::Error> {
-    for &(export, return_pointer_index, results) in to_xform {
-        xform_one(
+    to_xform: &[(walrus::FunctionId, usize, Vec<walrus::ValType>)],
+) -> Result<Vec<walrus::FunctionId>, anyhow::Error> {
+    let mut wrappers = Vec::new();
+    for (func, return_pointer_index, results) in to_xform {
+        wrappers.push(xform_one(
             module,
             memory,
             shadow_stack_pointer,
-            export,
-            return_pointer_index,
+            *func,
+            *return_pointer_index,
             results,
-        )?;
+        )?);
     }
-    Ok(())
+    Ok(wrappers)
 }
 
 // Ensure that `n` is aligned to `align`, rounding up as necessary.
@@ -137,20 +141,13 @@ fn xform_one(
     module: &mut walrus::Module,
     memory: walrus::MemoryId,
     shadow_stack_pointer: walrus::GlobalId,
-    export: walrus::ExportId,
+    func: walrus::FunctionId,
     return_pointer_index: usize,
     results: &[walrus::ValType],
-) -> Result<(), failure::Error> {
+) -> Result<walrus::FunctionId, anyhow::Error> {
     if module.globals.get(shadow_stack_pointer).ty != walrus::ValType::I32 {
-        failure::bail!("shadow stack pointer global does not have type `i32`");
+        anyhow::bail!("shadow stack pointer global does not have type `i32`");
     }
-
-    let func = match module.exports.get(export).item {
-        walrus::ExportItem::Function(f) => f,
-        _ => {
-            failure::bail!("can only multi-value transform exported functions, found non-function")
-        }
-    };
 
     // Compute the total size of all results, potentially with padding to ensure
     // that each result is aligned.
@@ -165,9 +162,9 @@ fn xform_one(
                 round_up_to_alignment(results_size, 8) + 8
             }
             walrus::ValType::V128 => round_up_to_alignment(results_size, 16) + 16,
-            walrus::ValType::Anyref => failure::bail!(
+            walrus::ValType::Externref | walrus::ValType::Funcref => anyhow::bail!(
                 "cannot multi-value transform functions that return \
-                 anyref, since they can't go into linear memory"
+                     reference types, since they can't go into linear memory"
             ),
         };
     }
@@ -179,7 +176,7 @@ fn xform_one(
     let (ty_params, ty_results) = module.types.params_results(ty);
 
     if !ty_results.is_empty() {
-        failure::bail!(
+        anyhow::bail!(
             "can only multi-value transform functions that don't return any \
              results (since they should be returned on the stack via a pointer)"
         );
@@ -187,8 +184,8 @@ fn xform_one(
 
     match ty_params.get(return_pointer_index) {
         Some(walrus::ValType::I32) => {}
-        None => failure::bail!("the return pointer parameter doesn't exist"),
-        Some(_) => failure::bail!("the return pointer parameter is not `i32`"),
+        None => anyhow::bail!("the return pointer parameter doesn't exist"),
+        Some(_) => anyhow::bail!("the return pointer parameter is not `i32`"),
     }
 
     let new_params: Vec<_> = ty_params
@@ -287,7 +284,7 @@ fn xform_one(
                 );
                 offset += 16;
             }
-            walrus::ValType::Anyref => unreachable!(),
+            walrus::ValType::Externref | walrus::ValType::Funcref => unreachable!(),
         }
     }
 
@@ -298,14 +295,11 @@ fn xform_one(
         .global_set(shadow_stack_pointer);
 
     let wrapper = wrapper.finish(params, &mut module.funcs);
-
-    // Replace the old export with our new multi-value wrapper for it!
-    match module.exports.get_mut(export).item {
-        walrus::ExportItem::Function(ref mut f) => *f = wrapper,
-        _ => unreachable!(),
+    if let Some(name) = &module.funcs.get(func).name {
+        module.funcs.get_mut(wrapper).name = Some(format!("{} multivalue shim", name));
     }
 
-    Ok(())
+    Ok(wrapper)
 }
 
 #[cfg(test)]

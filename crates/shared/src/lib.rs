@@ -22,7 +22,7 @@ macro_rules! shared_api {
 
         struct Import<'a> {
             module: ImportModule<'a>,
-            js_namespace: Option<&'a str>,
+            js_namespace: Option<Vec<String>>,
             kind: ImportKind<'a>,
         }
 
@@ -101,16 +101,19 @@ macro_rules! shared_api {
             name: &'a str,
             variants: Vec<EnumVariant<'a>>,
             comments: Vec<&'a str>,
+            generate_typescript: bool,
         }
 
         struct EnumVariant<'a> {
             name: &'a str,
             value: u32,
+            comments: Vec<&'a str>,
         }
 
         struct Function<'a> {
             arg_names: Vec<String>,
             name: &'a str,
+            generate_typescript: bool,
         }
 
         struct Struct<'a> {
@@ -118,13 +121,15 @@ macro_rules! shared_api {
             name: &'a str,
             fields: Vec<StructField<'a>>,
             comments: Vec<&'a str>,
-            prototype: TypeReference,
+            is_inspectable: bool,
+            generate_typescript: bool,
         }
 
         struct StructField<'a> {
             name: &'a str,
             readonly: bool,
             comments: Vec<&'a str>,
+            generate_typescript: bool,
         }
 
         struct LocalModule<'a> {

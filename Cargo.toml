@@ -1,6 +1,6 @@
 [package]
 name = "wasm-bindgen"
-version = "0.2.52"
+version = "0.2.68"
 authors = ["The wasm-bindgen Developers"]
 license = "MIT/Apache-2.0"
 readme = "README.md"
@@ -14,7 +14,7 @@ Easy support for interacting between JS and Rust.
 edition = "2018"
 
 [package.metadata.docs.rs]
-features = ['serde-serialize']
+features = ["serde-serialize"]
 
 [lib]
 test = false
@@ -36,16 +36,16 @@ strict-macro = ["wasm-bindgen-macro/strict-macro"]
 xxx_debug_only_print_generated_code = ["wasm-bindgen-macro/xxx_debug_only_print_generated_code"]
 
 [dependencies]
-wasm-bindgen-macro = { path = "crates/macro", version = "=0.2.52" }
+wasm-bindgen-macro = { path = "crates/macro", version = "=0.2.68" }
 serde = { version = "1.0", optional = true }
 serde_json = { version = "1.0", optional = true }
 cfg-if = "0.1.9"
 proc-macro-hack = "0.5"
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
-js-sys = { path = 'crates/js-sys', version = '0.3.29' }
-wasm-bindgen-test = { path = 'crates/test', version = '=0.3.2' }
-wasm-bindgen-futures = { path = 'crates/futures', version = '=0.4.2' }
+js-sys = { path = 'crates/js-sys', version = '0.3.45' }
+wasm-bindgen-test = { path = 'crates/test', version = '=0.3.18' }
+wasm-bindgen-futures = { path = 'crates/futures', version = '=0.4.18' }
 serde_derive = "1.0"
 wasm-bindgen-test-crate-a = { path = 'tests/crates/a', version = '0.1' }
 wasm-bindgen-test-crate-b = { path = 'tests/crates/b', version = '0.1' }
@@ -66,6 +66,7 @@ members = [
   "examples/char",
   "examples/closures",
   "examples/console_log",
+  "examples/deno",
   "examples/dom",
   "examples/duck-typed-interfaces",
   "examples/fetch",
@@ -79,6 +80,7 @@ members = [
   "examples/request-animation-frame",
   "examples/todomvc",
   "examples/wasm-in-wasm",
+  "examples/wasm-in-wasm-imports",
   "examples/wasm2js",
   "examples/web-components-composed-composed-path",
   "examples/web-components-defined-pseudo-class",
@@ -96,12 +98,13 @@ members = [
   "examples/web-components-word-count-web-component",
   "examples/webaudio",
   "examples/webgl",
+  "examples/webrtc_datachannel",
   "examples/websockets",
+  "examples/webxr",
   "examples/without-a-bundler",
   "examples/without-a-bundler-no-modules",
   "tests/no-std",
 ]
-exclude = ['crates/typescript']
 
 [patch.crates-io]
 wasm-bindgen = { path = '.' }

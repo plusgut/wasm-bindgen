@@ -1,6 +1,6 @@
 use crate::shell::Shell;
-use curl::easy::Easy;
-use failure::{bail, format_err, Error, ResultExt};
+use anyhow::{bail, format_err, Context, Error};
+use curl::easy::{Easy, List};
 use log::{debug, warn};
 use rouille::url::Url;
 use serde::{Deserialize, Serialize};
@@ -55,7 +55,7 @@ pub struct LegacyNewSessionParameters {
 /// binary, controlling it, running tests, scraping output, displaying output,
 /// etc. It will return `Ok` if all tests finish successfully, and otherwise it
 /// will return an error if some tests failed.
-pub fn run(server: &SocketAddr, shell: &Shell) -> Result<(), Error> {
+pub fn run(server: &SocketAddr, shell: &Shell, timeout: u64) -> Result<(), Error> {
     let driver = Driver::find()?;
     let mut drop_log: Box<dyn FnMut()> = Box::new(|| ());
     let driver_url = match driver.location() {
@@ -138,14 +138,14 @@ pub fn run(server: &SocketAddr, shell: &Shell) -> Result<(), Error> {
     // We periodically check the page to see if the output contains a known
     // string to only be printed when tests have finished running.
     //
-    // TODO: harness failures aren't well handled here, they always force a
-    //       timeout. These sorts of failures could be "you typo'd the path to a
+    // TODO: harness anyhows aren't well handled here, they always force a
+    //       timeout. These sorts of anyhows could be "you typo'd the path to a
     //       local script" which is pretty bad to time out for, we should detect
     //       this on the page and look for such output here, printing diagnostic
     //       information.
     shell.status("Waiting for test to finish...");
     let start = Instant::now();
-    let max = Duration::new(20, 0);
+    let max = Duration::new(timeout, 0);
     while start.elapsed() < max {
         if client.text(&id, &output)?.contains("test result: ") {
             break;
@@ -170,7 +170,7 @@ pub fn run(server: &SocketAddr, shell: &Shell) -> Result<(), Error> {
         // output, so we shouldn't need the driver logs to get printed.
         drop_log();
     } else {
-        println!("failed to detect test as having been run");
+        println!("Failed to detect test as having been run. It might have timed out.");
         if output.len() > 0 {
             println!("output div contained:\n{}", tab(&output));
         }
@@ -522,6 +522,8 @@ impl Client {
         match method {
             Method::Post(data) => {
                 self.handle.post(true)?;
+                self.handle
+                    .http_headers(build_headers(&["Content-Type: application/json"]))?;
                 self.handle.post_fields_copy(data.as_bytes())?;
             }
             Method::Delete => self.handle.custom_request("DELETE")?,
@@ -559,6 +561,14 @@ impl Drop for Client {
             warn!("failed to close window {:?}", e);
         }
     }
+}
+
+fn build_headers(headers: &[&str]) -> List {
+    let mut list = List::new();
+    for header in headers {
+        list.append(header).unwrap();
+    }
+    list
 }
 
 fn read<R: Read>(r: &mut R) -> io::Result<Vec<u8>> {

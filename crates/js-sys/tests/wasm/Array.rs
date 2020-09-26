@@ -1,5 +1,6 @@
 use js_sys::*;
 use std::iter::FromIterator;
+use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::JsValue;
 use wasm_bindgen_test::*;
@@ -29,45 +30,37 @@ fn to_rust(arr: &Array) -> Vec<JsValue> {
 #[wasm_bindgen_test]
 fn from_iter() {
     assert_eq!(
-        to_rust(&vec![
-            JsValue::from("a"),
-            JsValue::from("b"),
-            JsValue::from("c"),
-        ].into_iter().collect()),
+        to_rust(
+            &vec![JsValue::from("a"), JsValue::from("b"), JsValue::from("c"),]
+                .into_iter()
+                .collect()
+        ),
         vec!["a", "b", "c"],
     );
 
     assert_eq!(
-        to_rust(&vec![
-            JsValue::from("a"),
-            JsValue::from("b"),
-            JsValue::from("c"),
-        ].iter().collect()),
+        to_rust(
+            &vec![JsValue::from("a"), JsValue::from("b"), JsValue::from("c"),]
+                .iter()
+                .collect()
+        ),
         vec!["a", "b", "c"],
     );
 
     let array = js_array![1u32, 2u32, 3u32];
 
     assert_eq!(
-        to_rust(&vec![
-            array.clone(),
-        ].into_iter().collect()),
+        to_rust(&vec![array.clone(),].into_iter().collect()),
         vec![JsValue::from(array.clone())],
     );
 
     assert_eq!(
-        to_rust(&vec![
-            array.clone(),
-        ].iter().collect()),
+        to_rust(&vec![array.clone(),].iter().collect()),
         vec![JsValue::from(array)],
     );
 
     assert_eq!(
-        to_rust(&vec![
-            5,
-            10,
-            20,
-        ].into_iter().map(JsValue::from).collect()),
+        to_rust(&vec![5, 10, 20,].into_iter().map(JsValue::from).collect()),
         vec![5, 10, 20],
     );
 
@@ -80,16 +73,81 @@ fn from_iter() {
         vec!["a", "b", "c"],
     );
 
-    let v = vec![
-        "a",
-        "b",
-        "c",
-    ];
+    let v = vec!["a", "b", "c"];
 
     assert_eq!(
         to_rust(&Array::from_iter(v.into_iter().map(|s| JsValue::from(s)))),
         vec!["a", "b", "c"],
     );
+}
+
+#[wasm_bindgen_test]
+fn to_vec() {
+    let array = vec![JsValue::from("a"), JsValue::from("b"), JsValue::from("c")]
+        .into_iter()
+        .collect::<js_sys::Array>();
+
+    assert_eq!(
+        array.to_vec(),
+        vec![JsValue::from("a"), JsValue::from("b"), JsValue::from("c")]
+    );
+}
+
+#[wasm_bindgen_test]
+fn iter() {
+    let array = vec![JsValue::from("a"), JsValue::from("b"), JsValue::from("c")]
+        .into_iter()
+        .collect::<js_sys::Array>();
+
+    assert_eq!(
+        array.iter().collect::<Vec<JsValue>>(),
+        vec![JsValue::from("a"), JsValue::from("b"), JsValue::from("c")]
+    );
+
+    let mut iter = array.iter();
+
+    assert_eq!(iter.size_hint(), (3, Some(3)));
+    assert_eq!(iter.next(), Some(JsValue::from("a")));
+
+    assert_eq!(iter.size_hint(), (2, Some(2)));
+    assert_eq!(iter.next_back(), Some(JsValue::from("c")));
+
+    assert_eq!(iter.size_hint(), (1, Some(1)));
+    assert_eq!(iter.next_back(), Some(JsValue::from("b")));
+
+    assert_eq!(iter.size_hint(), (0, Some(0)));
+    assert_eq!(iter.next(), None);
+
+    assert_eq!(iter.size_hint(), (0, Some(0)));
+    assert_eq!(iter.next_back(), None);
+
+    let mut iter = array.iter();
+
+    assert_eq!(iter.size_hint(), (3, Some(3)));
+    assert_eq!(iter.next(), Some(JsValue::from("a")));
+
+    assert_eq!(iter.size_hint(), (2, Some(2)));
+    assert_eq!(iter.next(), Some(JsValue::from("b")));
+
+    assert_eq!(iter.size_hint(), (1, Some(1)));
+    assert_eq!(iter.next(), Some(JsValue::from("c")));
+
+    assert_eq!(iter.size_hint(), (0, Some(0)));
+    assert_eq!(iter.next(), None);
+
+    let mut iter = array.iter();
+
+    assert_eq!(iter.size_hint(), (3, Some(3)));
+    assert_eq!(iter.next_back(), Some(JsValue::from("c")));
+
+    assert_eq!(iter.size_hint(), (2, Some(2)));
+    assert_eq!(iter.next_back(), Some(JsValue::from("b")));
+
+    assert_eq!(iter.size_hint(), (1, Some(1)));
+    assert_eq!(iter.next_back(), Some(JsValue::from("a")));
+
+    assert_eq!(iter.size_hint(), (0, Some(0)));
+    assert_eq!(iter.next_back(), None);
 }
 
 #[wasm_bindgen_test]
@@ -477,4 +535,88 @@ fn array_inheritance() {
     assert!(array.is_instance_of::<Array>());
     assert!(array.is_instance_of::<Object>());
     let _: &Object = array.as_ref();
+}
+
+#[wasm_bindgen(module = "tests/wasm/Array.js")]
+extern "C" {
+    fn populate_array(arr: JsValue, start: JsValue, len: JsValue) -> JsValue;
+}
+
+fn test_array_view_mut_raw<ElemT: std::cmp::PartialEq + std::fmt::Debug, ArrT>(
+    sut: unsafe fn(*mut ElemT, usize) -> ArrT,
+    u8ToElem: fn(u8) -> ElemT,
+    arrToJsValue: fn(ArrT) -> JsValue,
+) {
+    let start: u8 = 10;
+    let len: usize = 32;
+    let end: u8 = start + len as u8;
+    let mut buffer: Vec<ElemT> = Vec::new();
+    buffer.reserve(len);
+    unsafe {
+        let array: ArrT = sut(buffer.as_mut_ptr(), len);
+        populate_array(
+            arrToJsValue(array),
+            JsValue::from(start),
+            JsValue::from(len as u32),
+        );
+        buffer.set_len(len);
+    }
+    let expected: Vec<ElemT> = (start..end).map(u8ToElem).collect();
+    assert_eq!(buffer, expected)
+}
+
+#[wasm_bindgen_test]
+fn Int8Array_view_mut_raw() {
+    fn u8Toi8_unsafe(x: u8) -> i8 {
+        x as i8
+    }
+    test_array_view_mut_raw(
+        js_sys::Int8Array::view_mut_raw,
+        u8Toi8_unsafe,
+        JsValue::from,
+    );
+}
+
+#[wasm_bindgen_test]
+fn Int16Array_view_mut_raw() {
+    test_array_view_mut_raw(js_sys::Int16Array::view_mut_raw, i16::from, JsValue::from);
+}
+
+#[wasm_bindgen_test]
+fn Int32Array_view_mut_raw() {
+    test_array_view_mut_raw(js_sys::Int32Array::view_mut_raw, i32::from, JsValue::from);
+}
+
+#[wasm_bindgen_test]
+fn Uint8Array_view_mut_raw() {
+    test_array_view_mut_raw(js_sys::Uint8Array::view_mut_raw, u8::from, JsValue::from);
+}
+
+#[wasm_bindgen_test]
+fn Uint8ClampedArray_view_mut_raw() {
+    test_array_view_mut_raw(
+        js_sys::Uint8ClampedArray::view_mut_raw,
+        u8::from,
+        JsValue::from,
+    );
+}
+
+#[wasm_bindgen_test]
+fn Uint16Array_view_mut_raw() {
+    test_array_view_mut_raw(js_sys::Uint16Array::view_mut_raw, u16::from, JsValue::from);
+}
+
+#[wasm_bindgen_test]
+fn Uint32Array_view_mut_raw() {
+    test_array_view_mut_raw(js_sys::Uint32Array::view_mut_raw, u32::from, JsValue::from);
+}
+
+#[wasm_bindgen_test]
+fn Float32Array_view_mut_raw() {
+    test_array_view_mut_raw(js_sys::Float32Array::view_mut_raw, f32::from, JsValue::from);
+}
+
+#[wasm_bindgen_test]
+fn Float64Array_view_mut_raw() {
+    test_array_view_mut_raw(js_sys::Float64Array::view_mut_raw, f64::from, JsValue::from);
 }

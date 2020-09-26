@@ -1,9 +1,8 @@
+use crate::generated::*;
 use js_sys::Object;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_test::*;
-
-include!(concat!(env!("OUT_DIR"), "/simple.rs"));
 
 #[wasm_bindgen_test]
 fn interfaces_inherit_from_object() {
@@ -86,11 +85,11 @@ fn global_method() {
 #[wasm_bindgen_test]
 fn indexing() {
     let f = Indexing::new().unwrap();
-    assert_eq!(f.get(123), -1);
+    assert_eq!(f.get(123).unwrap(), -1);
     f.set(123, 456);
-    assert_eq!(f.get(123), 456);
+    assert_eq!(f.get(123).unwrap(), 456);
     f.delete(123);
-    assert_eq!(f.get(123), -1);
+    assert_eq!(f.get(123).unwrap(), -1);
 }
 
 #[wasm_bindgen_test]

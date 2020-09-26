@@ -4,7 +4,7 @@ use crate::util::ShortHash;
 use crate::Diagnostic;
 use proc_macro2::{Ident, Literal, Span, TokenStream};
 use quote::{quote, ToTokens};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 use syn;
@@ -72,28 +72,31 @@ impl TryToTokens for ast::Program {
         for s in self.structs.iter() {
             s.to_tokens(tokens);
         }
-        let mut types = HashSet::new();
+        let mut types = HashMap::new();
         for i in self.imports.iter() {
             if let ast::ImportKind::Type(t) = &i.kind {
-                types.insert(t.rust_name.clone());
+                types.insert(t.rust_name.to_string(), t.rust_name.clone());
             }
         }
         for i in self.imports.iter() {
-            DescribeImport(&i.kind).to_tokens(tokens);
+            DescribeImport { kind: &i.kind }.to_tokens(tokens);
 
             // If there is a js namespace, check that name isn't a type. If it is,
             // this import might be a method on that type.
-            if let Some(ns) = &i.js_namespace {
-                if types.contains(ns) && i.kind.fits_on_impl() {
-                    let kind = match i.kind.try_to_token_stream() {
-                        Ok(kind) => kind,
-                        Err(e) => {
-                            errors.push(e);
-                            continue;
-                        }
-                    };
-                    (quote! { impl #ns { #kind } }).to_tokens(tokens);
-                    continue;
+            if let Some(nss) = &i.js_namespace {
+                // When the namespace is `A.B`, the type name should be `B`.
+                if let Some(ns) = nss.last().and_then(|t| types.get(t)) {
+                    if i.kind.fits_on_impl() {
+                        let kind = match i.kind.try_to_token_stream() {
+                            Ok(kind) => kind,
+                            Err(e) => {
+                                errors.push(e);
+                                continue;
+                            }
+                        };
+                        (quote! { impl #ns { #kind } }).to_tokens(tokens);
+                        continue;
+                    }
                 }
             }
 
@@ -103,12 +106,6 @@ impl TryToTokens for ast::Program {
         }
         for e in self.enums.iter() {
             e.to_tokens(tokens);
-        }
-        for c in self.consts.iter() {
-            c.to_tokens(tokens);
-        }
-        for d in self.dictionaries.iter() {
-            d.to_tokens(tokens);
         }
 
         Diagnostic::from_vec(errors)?;
@@ -277,18 +274,8 @@ impl ToTokens for ast::Struct {
             #[no_mangle]
             #[doc(hidden)]
             #[allow(clippy::all)]
-            pub unsafe extern "C" fn #free_fn(ptr: <*mut ::wasm_bindgen::WasmType<#name> as ::wasm_bindgen::convert::FromWasmAbi>::Abi) {
-                use ::wasm_bindgen::__rt::assert_not_null;
-                use ::wasm_bindgen::convert::FromWasmAbi;
-                use ::wasm_bindgen::WasmType;
-
-                let ptr = <*mut WasmType<#name> as FromWasmAbi>::from_abi(ptr);
-                assert_not_null(ptr);
-
-                // consume Rc and, if it's the last one, make sure no one's borrowing
-                if let Ok(me) = WasmType::try_unwrap(*Box::from_raw(ptr)) {
-                    me.borrow_mut();
-                }
+            pub unsafe extern "C" fn #free_fn(ptr: u32) {
+                drop(<#name as wasm_bindgen::convert::FromWasmAbi>::from_abi(ptr));
             }
 
             #[allow(clippy::all)]
@@ -390,12 +377,13 @@ impl ToTokens for ast::StructField {
         })
         .to_tokens(tokens);
 
-        Descriptor(
-            &getter,
-            quote! {
+        Descriptor {
+            ident: &getter,
+            inner: quote! {
                 <#ty as WasmDescribe>::describe();
             },
-        )
+            attrs: vec![],
+        }
         .to_tokens(tokens);
 
         if self.readonly {
@@ -535,20 +523,34 @@ impl TryToTokens for ast::Export {
         // since we're returning a promise to JS, and this will implicitly
         // require that the function returns a `Future<Output = Result<...>>`
         let (ret_ty, ret_expr) = if self.function.r#async {
+            if self.start {
+                (
+                    quote! { () },
+                    quote! {
+                        wasm_bindgen_futures::spawn_local(async move {
+                            <#syn_ret as wasm_bindgen::__rt::Start>::start(#ret.await);
+                        })
+                    },
+                )
+            } else {
+                (
+                    quote! { wasm_bindgen::JsValue },
+                    quote! {
+                        wasm_bindgen_futures::future_to_promise(async move {
+                            <#syn_ret as wasm_bindgen::__rt::IntoJsResult>::into_js_result(#ret.await)
+                        }).into()
+                    },
+                )
+            }
+        } else if self.start {
             (
-                quote! { wasm_bindgen::JsValue },
-                quote! {
-                    wasm_bindgen_futures::future_to_promise(async {
-                        wasm_bindgen::__rt::IntoJsResult::into_js_result(#ret.await)
-                    }).into()
-                },
+                quote! { () },
+                quote! { <#syn_ret as wasm_bindgen::__rt::Start>::start(#ret) },
             )
         } else {
-            (
-                quote! { #syn_ret },
-                quote! { #ret },
-            )
+            (quote! { #syn_ret }, quote! { #ret })
         };
+
         let projection = quote! { <#ret_ty as wasm_bindgen::convert::ReturnWasmAbi> };
         let describe_ret = quote! {
             <#ret_ty as WasmDescribe>::describe();
@@ -609,16 +611,17 @@ impl TryToTokens for ast::Export {
         // this, but the tl;dr; is that this is stripped from the final wasm
         // binary along with anything it references.
         let export = Ident::new(&export_name, Span::call_site());
-        Descriptor(
-            &export,
-            quote! {
+        Descriptor {
+            ident: &export,
+            inner: quote! {
                 inform(FUNCTION);
                 inform(0);
                 inform(#nargs);
                 #(<#argtys as WasmDescribe>::describe();)*
                 #describe_ret
             },
-        )
+            attrs: attrs.clone(),
+        }
         .to_tokens(into);
 
         Ok(())
@@ -657,6 +660,21 @@ impl ToTokens for ast::ImportType {
             }
             None => {
                 quote! { wasm_bindgen::JsValue }
+            }
+        };
+
+        let description = if let Some(typescript_type) = &self.typescript_type {
+            let typescript_type_len = typescript_type.len() as u32;
+            let typescript_type_chars = typescript_type.chars().map(|c| c as u32);
+            quote! {
+                use wasm_bindgen::describe::*;
+                inform(NAMED_EXTERNREF);
+                inform(#typescript_type_len);
+                #(inform(#typescript_type_chars);)*
+            }
+        } else {
+            quote! {
+                JsValue::describe()
             }
         };
 
@@ -705,7 +723,7 @@ impl ToTokens for ast::ImportType {
 
                 impl WasmDescribe for #rust_name {
                     fn describe() {
-                        JsValue::describe();
+                        #description
                     }
                 }
 
@@ -736,12 +754,16 @@ impl ToTokens for ast::ImportType {
 
                 impl OptionIntoWasmAbi for #rust_name {
                     #[inline]
-                    fn none() -> Self::Abi { 0 }
+                    fn none() -> Self::Abi {
+                        0
+                    }
                 }
 
                 impl<'a> OptionIntoWasmAbi for &'a #rust_name {
                     #[inline]
-                    fn none() -> Self::Abi { 0 }
+                    fn none() -> Self::Abi {
+                        0
+                    }
                 }
 
                 impl FromWasmAbi for #rust_name {
@@ -914,61 +936,69 @@ impl ToTokens for ast::ImportEnum {
 
             #[allow(clippy::all)]
             impl #name {
-                #vis fn from_js_value(obj: &wasm_bindgen::JsValue) -> Option<#name> {
-                    obj.as_string().and_then(|obj_str| match obj_str.as_str() {
+                fn from_str(s: &str) -> Option<#name> {
+                    match s {
                         #(#variant_strings => Some(#variant_paths_ref),)*
                         _ => None,
-                    })
+                    }
+                }
+
+                fn to_str(&self) -> &'static str {
+                    match self {
+                        #(#variant_paths_ref => #variant_strings,)*
+                        #name::__Nonexhaustive => panic!(#expect_string),
+                    }
+                }
+
+                #vis fn from_js_value(obj: &wasm_bindgen::JsValue) -> Option<#name> {
+                    obj.as_string().and_then(|obj_str| Self::from_str(obj_str.as_str()))
                 }
             }
 
+            // It should really be using &str for all of these, but that requires some major changes to cli-support
             #[allow(clippy::all)]
             impl wasm_bindgen::describe::WasmDescribe for #name {
                 fn describe() {
-                    wasm_bindgen::JsValue::describe()
+                    <wasm_bindgen::JsValue as wasm_bindgen::describe::WasmDescribe>::describe()
                 }
             }
 
             #[allow(clippy::all)]
             impl wasm_bindgen::convert::IntoWasmAbi for #name {
-                type Abi = <wasm_bindgen::JsValue as
-                    wasm_bindgen::convert::IntoWasmAbi>::Abi;
+                type Abi = <wasm_bindgen::JsValue as wasm_bindgen::convert::IntoWasmAbi>::Abi;
 
                 #[inline]
                 fn into_abi(self) -> Self::Abi {
-                    wasm_bindgen::JsValue::from(self).into_abi()
+                    <wasm_bindgen::JsValue as wasm_bindgen::convert::IntoWasmAbi>::into_abi(self.into())
                 }
             }
 
             #[allow(clippy::all)]
             impl wasm_bindgen::convert::FromWasmAbi for #name {
-                type Abi = <wasm_bindgen::JsValue as
-                    wasm_bindgen::convert::FromWasmAbi>::Abi;
+                type Abi = <wasm_bindgen::JsValue as wasm_bindgen::convert::FromWasmAbi>::Abi;
 
                 unsafe fn from_abi(js: Self::Abi) -> Self {
-                    #name::from_js_value(&wasm_bindgen::JsValue::from_abi(js)).unwrap_or(#name::__Nonexhaustive)
+                    let s = <wasm_bindgen::JsValue as wasm_bindgen::convert::FromWasmAbi>::from_abi(js);
+                    #name::from_js_value(&s).unwrap_or(#name::__Nonexhaustive)
                 }
             }
 
             #[allow(clippy::all)]
             impl wasm_bindgen::convert::OptionIntoWasmAbi for #name {
                 #[inline]
-                fn none() -> Self::Abi { Object::none() }
+                fn none() -> Self::Abi { <::js_sys::Object as wasm_bindgen::convert::OptionIntoWasmAbi>::none() }
             }
 
             #[allow(clippy::all)]
             impl wasm_bindgen::convert::OptionFromWasmAbi for #name {
                 #[inline]
-                fn is_none(abi: &Self::Abi) -> bool { Object::is_none(abi) }
+                fn is_none(abi: &Self::Abi) -> bool { <::js_sys::Object as wasm_bindgen::convert::OptionFromWasmAbi>::is_none(abi) }
             }
 
             #[allow(clippy::all)]
             impl From<#name> for wasm_bindgen::JsValue {
                 fn from(obj: #name) -> wasm_bindgen::JsValue {
-                    match obj {
-                        #(#variant_paths_ref => wasm_bindgen::JsValue::from_str(#variant_strings),)*
-                        #name::__Nonexhaustive => panic!(#expect_string),
-                    }
+                    wasm_bindgen::JsValue::from(obj.to_str())
                 }
             }
         }).to_tokens(tokens);
@@ -1046,22 +1076,54 @@ impl TryToTokens for ast::ImportFunction {
                 );
             }
             Some(ref ty) => {
-                abi_ret = quote! {
-                    <#ty as wasm_bindgen::convert::FromWasmAbi>::Abi
-                };
-                convert_ret = quote! {
-                    <#ty as wasm_bindgen::convert::FromWasmAbi>
-                        ::from_abi(#ret_ident)
-                };
+                if self.function.r#async {
+                    abi_ret =
+                        quote! { <js_sys::Promise as wasm_bindgen::convert::FromWasmAbi>::Abi };
+                    let future = quote! {
+                        wasm_bindgen_futures::JsFuture::from(
+                            <js_sys::Promise as wasm_bindgen::convert::FromWasmAbi>
+                                ::from_abi(#ret_ident)
+                        ).await
+                    };
+                    convert_ret = if self.catch {
+                        quote! { Ok(#future?) }
+                    } else {
+                        quote! { #future.expect("unexpected exception") }
+                    };
+                } else {
+                    abi_ret = quote! {
+                        <#ty as wasm_bindgen::convert::FromWasmAbi>::Abi
+                    };
+                    convert_ret = quote! {
+                        <#ty as wasm_bindgen::convert::FromWasmAbi>
+                            ::from_abi(#ret_ident)
+                    };
+                }
             }
             None => {
-                abi_ret = quote! { () };
-                convert_ret = quote! { () };
+                if self.function.r#async {
+                    abi_ret =
+                        quote! { <js_sys::Promise as wasm_bindgen::convert::FromWasmAbi>::Abi };
+                    let future = quote! {
+                        wasm_bindgen_futures::JsFuture::from(
+                            <js_sys::Promise as wasm_bindgen::convert::FromWasmAbi>
+                                ::from_abi(#ret_ident)
+                        ).await
+                    };
+                    convert_ret = if self.catch {
+                        quote! { #future?; Ok(()) }
+                    } else {
+                        quote! { #future.expect("uncaught exception"); }
+                    };
+                } else {
+                    abi_ret = quote! { () };
+                    convert_ret = quote! { () };
+                }
             }
         }
 
         let mut exceptional_ret = quote!();
-        if self.catch {
+        if self.catch && !self.function.r#async {
             convert_ret = quote! { Ok(#convert_ret) };
             exceptional_ret = quote! {
                 wasm_bindgen::__rt::take_last_exception()?;
@@ -1102,6 +1164,7 @@ impl TryToTokens for ast::ImportFunction {
         // the best we can in the meantime.
         let extern_fn = respan(
             quote! {
+                #(#attrs)*
                 #[link(wasm_import_module = "__wbindgen_placeholder__")]
                 #[cfg(all(target_arch = "wasm32", not(target_os = "emscripten")))]
                 extern "C" {
@@ -1119,12 +1182,17 @@ impl TryToTokens for ast::ImportFunction {
             &self.rust_name,
         );
 
+        let maybe_async = if self.function.r#async {
+            Some(quote! {async})
+        } else {
+            None
+        };
         let invocation = quote! {
             #(#attrs)*
             #[allow(bad_style)]
             #[doc = #doc_comment]
             #[allow(clippy::all)]
-            #vis fn #rust_name(#me #(#arguments),*) #ret {
+            #vis #maybe_async fn #rust_name(#me #(#arguments),*) #ret {
                 #extern_fn
 
                 unsafe {
@@ -1154,11 +1222,13 @@ impl TryToTokens for ast::ImportFunction {
 }
 
 // See comment above in ast::Export for what's going on here.
-struct DescribeImport<'a>(&'a ast::ImportKind);
+struct DescribeImport<'a> {
+    kind: &'a ast::ImportKind,
+}
 
 impl<'a> ToTokens for DescribeImport<'a> {
     fn to_tokens(&self, tokens: &mut TokenStream) {
-        let f = match *self.0 {
+        let f = match *self.kind {
             ast::ImportKind::Function(ref f) => f,
             ast::ImportKind::Static(_) => return,
             ast::ImportKind::Type(_) => return,
@@ -1168,26 +1238,29 @@ impl<'a> ToTokens for DescribeImport<'a> {
         let nargs = f.function.arguments.len() as u32;
         let inform_ret = match &f.js_ret {
             Some(ref t) => quote! { <#t as WasmDescribe>::describe(); },
+            // async functions always return a JsValue, even if they say to return ()
+            None if f.function.r#async => quote! { <JsValue as WasmDescribe>::describe(); },
             None => quote! { <() as WasmDescribe>::describe(); },
         };
 
-        Descriptor(
-            &f.shim,
-            quote! {
+        Descriptor {
+            ident: &f.shim,
+            inner: quote! {
                 inform(FUNCTION);
                 inform(0);
                 inform(#nargs);
                 #(<#argtys as WasmDescribe>::describe();)*
                 #inform_ret
             },
-        )
+            attrs: f.function.rust_attrs.clone(),
+        }
         .to_tokens(tokens);
     }
 }
 
 impl ToTokens for ast::Enum {
     fn to_tokens(&self, into: &mut TokenStream) {
-        let enum_name = &self.name;
+        let enum_name = &self.rust_name;
         let hole = &self.hole;
         let cast_clauses = self.variants.iter().map(|variant| {
             let variant_name = &variant.name;
@@ -1278,254 +1351,24 @@ impl ToTokens for ast::ImportStatic {
         })
         .to_tokens(into);
 
-        Descriptor(
-            &shim_name,
-            quote! {
+        Descriptor {
+            ident: &shim_name,
+            inner: quote! {
                 <#ty as WasmDescribe>::describe();
             },
-        )
+            attrs: vec![],
+        }
         .to_tokens(into);
-    }
-}
-
-impl ToTokens for ast::Const {
-    fn to_tokens(&self, tokens: &mut TokenStream) {
-        use crate::ast::ConstValue::*;
-
-        let vis = &self.vis;
-        let name = &self.name;
-        let ty = &self.ty;
-
-        let value: TokenStream = match self.value {
-            BooleanLiteral(false) => quote!(false),
-            BooleanLiteral(true) => quote!(true),
-            // the actual type is unknown because of typedefs
-            // so we cannot use std::fxx::INFINITY
-            // but we can use type inference
-            FloatLiteral(f) if f.is_infinite() && f.is_sign_positive() => quote!(1.0 / 0.0),
-            FloatLiteral(f) if f.is_infinite() && f.is_sign_negative() => quote!(-1.0 / 0.0),
-            FloatLiteral(f) if f.is_nan() => quote!(0.0 / 0.0),
-            // again no suffix
-            // panics on +-inf, nan
-            FloatLiteral(f) => {
-                let f = Literal::f64_suffixed(f);
-                quote!(#f)
-            }
-            SignedIntegerLiteral(i) => {
-                let i = Literal::i64_suffixed(i);
-                quote!(#i)
-            }
-            UnsignedIntegerLiteral(i) => {
-                let i = Literal::u64_suffixed(i);
-                quote!(#i)
-            }
-            Null => unimplemented!(),
-        };
-
-        let declaration = quote!(#vis const #name: #ty = #value as #ty;);
-
-        if let Some(class) = &self.class {
-            (quote! {
-                impl #class {
-                    #declaration
-                }
-            })
-            .to_tokens(tokens);
-        } else {
-            declaration.to_tokens(tokens);
-        }
-    }
-}
-
-impl ToTokens for ast::Dictionary {
-    fn to_tokens(&self, tokens: &mut TokenStream) {
-        let name = &self.name;
-        let mut methods = TokenStream::new();
-        for field in self.fields.iter() {
-            field.to_tokens(&mut methods);
-        }
-        let required_names = &self
-            .fields
-            .iter()
-            .filter(|f| f.required)
-            .map(|f| &f.rust_name)
-            .collect::<Vec<_>>();
-        let required_types = &self
-            .fields
-            .iter()
-            .filter(|f| f.required)
-            .map(|f| &f.ty)
-            .collect::<Vec<_>>();
-        let required_names2 = required_names;
-        let required_names3 = required_names;
-        let doc_comment = match &self.doc_comment {
-            None => "",
-            Some(doc_string) => doc_string,
-        };
-
-        let ctor = if self.ctor {
-            let doc_comment = match &self.ctor_doc_comment {
-                None => "",
-                Some(doc_string) => doc_string,
-            };
-            quote! {
-                #[doc = #doc_comment]
-                pub fn new(#(#required_names: #required_types),*) -> #name {
-                    let mut _ret = #name { obj: ::js_sys::Object::new() };
-                    #(_ret.#required_names2(#required_names3);)*
-                    return _ret
-                }
-            }
-        } else {
-            quote! {}
-        };
-
-        let const_name = Ident::new(&format!("_CONST_{}", name), Span::call_site());
-        (quote! {
-            #[derive(Clone, Debug)]
-            #[repr(transparent)]
-            #[allow(clippy::all)]
-            #[doc = #doc_comment]
-            pub struct #name {
-                obj: ::js_sys::Object,
-            }
-
-            #[allow(clippy::all)]
-            impl #name {
-                #ctor
-                #methods
-            }
-
-            #[allow(bad_style)]
-            #[allow(clippy::all)]
-            const #const_name: () = {
-                use js_sys::Object;
-                use wasm_bindgen::describe::WasmDescribe;
-                use wasm_bindgen::convert::*;
-                use wasm_bindgen::{JsValue, JsCast};
-                use wasm_bindgen::__rt::core::mem::ManuallyDrop;
-
-                // interop w/ JsValue
-                impl From<#name> for JsValue {
-                    #[inline]
-                    fn from(val: #name) -> JsValue {
-                        val.obj.into()
-                    }
-                }
-                impl AsRef<JsValue> for #name {
-                    #[inline]
-                    fn as_ref(&self) -> &JsValue { self.obj.as_ref() }
-                }
-
-                // Boundary conversion impls
-                impl WasmDescribe for #name {
-                    fn describe() {
-                        Object::describe();
-                    }
-                }
-
-                impl IntoWasmAbi for #name {
-                    type Abi = <Object as IntoWasmAbi>::Abi;
-                    #[inline]
-                    fn into_abi(self) -> Self::Abi {
-                        self.obj.into_abi()
-                    }
-                }
-
-                impl<'a> IntoWasmAbi for &'a #name {
-                    type Abi = <&'a Object as IntoWasmAbi>::Abi;
-                    #[inline]
-                    fn into_abi(self) -> Self::Abi {
-                        (&self.obj).into_abi()
-                    }
-                }
-
-                impl FromWasmAbi for #name {
-                    type Abi = <Object as FromWasmAbi>::Abi;
-                    #[inline]
-                    unsafe fn from_abi(abi: Self::Abi) -> Self {
-                        #name { obj: Object::from_abi(abi) }
-                    }
-                }
-
-                impl OptionIntoWasmAbi for #name {
-                    #[inline]
-                    fn none() -> Self::Abi { Object::none() }
-                }
-                impl<'a> OptionIntoWasmAbi for &'a #name {
-                    #[inline]
-                    fn none() -> Self::Abi { <&'a Object>::none() }
-                }
-                impl OptionFromWasmAbi for #name {
-                    #[inline]
-                    fn is_none(abi: &Self::Abi) -> bool { Object::is_none(abi) }
-                }
-
-                impl RefFromWasmAbi for #name {
-                    type Abi = <Object as RefFromWasmAbi>::Abi;
-                    type Anchor = ManuallyDrop<#name>;
-
-                    #[inline]
-                    unsafe fn ref_from_abi(js: Self::Abi) -> Self::Anchor {
-                        let tmp = <Object as RefFromWasmAbi>::ref_from_abi(js);
-                        ManuallyDrop::new(#name {
-                            obj: ManuallyDrop::into_inner(tmp),
-                        })
-                    }
-                }
-
-                impl JsCast for #name {
-                    #[inline]
-                    fn instanceof(val: &JsValue) -> bool {
-                        Object::instanceof(val)
-                    }
-
-                    #[inline]
-                    fn unchecked_from_js(val: JsValue) -> Self {
-                        #name { obj: Object::unchecked_from_js(val) }
-                    }
-
-                    #[inline]
-                    fn unchecked_from_js_ref(val: &JsValue) -> &Self {
-                        unsafe { &*(val as *const JsValue as *const #name) }
-                    }
-                }
-            };
-        })
-        .to_tokens(tokens);
-    }
-}
-
-impl ToTokens for ast::DictionaryField {
-    fn to_tokens(&self, tokens: &mut TokenStream) {
-        let rust_name = &self.rust_name;
-        let js_name = &self.js_name;
-        let ty = &self.ty;
-        let doc_comment = match &self.doc_comment {
-            None => "",
-            Some(doc_string) => doc_string,
-        };
-        (quote! {
-            #[allow(clippy::all)]
-            #[doc = #doc_comment]
-            pub fn #rust_name(&mut self, val: #ty) -> &mut Self {
-                use wasm_bindgen::JsValue;
-                let r = ::js_sys::Reflect::set(
-                    self.obj.as_ref(),
-                    &JsValue::from(#js_name),
-                    &JsValue::from(val),
-                );
-                debug_assert!(r.is_ok(), "setting properties should never fail on our dictionary objects");
-                let _ = r;
-                self
-            }
-        }).to_tokens(tokens);
     }
 }
 
 /// Emits the necessary glue tokens for "descriptor", generating an appropriate
 /// symbol name as well as attributes around the descriptor function itself.
-struct Descriptor<'a, T>(&'a Ident, T);
+struct Descriptor<'a, T> {
+    ident: &'a Ident,
+    inner: T,
+    attrs: Vec<syn::Attribute>,
+}
 
 impl<'a, T: ToTokens> ToTokens for Descriptor<'a, T> {
     fn to_tokens(&self, tokens: &mut TokenStream) {
@@ -1540,17 +1383,22 @@ impl<'a, T: ToTokens> ToTokens for Descriptor<'a, T> {
         lazy_static::lazy_static! {
             static ref DESCRIPTORS_EMITTED: Mutex<HashSet<String>> = Default::default();
         }
+
+        let ident = self.ident;
+
         if !DESCRIPTORS_EMITTED
             .lock()
             .unwrap()
-            .insert(self.0.to_string())
+            .insert(ident.to_string())
         {
             return;
         }
 
-        let name = Ident::new(&format!("__wbindgen_describe_{}", self.0), self.0.span());
-        let inner = &self.1;
+        let name = Ident::new(&format!("__wbindgen_describe_{}", ident), ident.span());
+        let inner = &self.inner;
+        let attrs = &self.attrs;
         (quote! {
+            #(#attrs)*
             #[no_mangle]
             #[allow(non_snake_case)]
             #[doc(hidden)]

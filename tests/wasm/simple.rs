@@ -1,5 +1,5 @@
 use wasm_bindgen::prelude::*;
-use wasm_bindgen::JsCast;
+use wasm_bindgen::{intern, unintern, JsCast};
 use wasm_bindgen_test::*;
 
 #[wasm_bindgen(module = "tests/wasm/simple.js")]
@@ -157,6 +157,9 @@ fn binding_to_unimplemented_apis_doesnt_break_everything() {
 fn optional_slices() {
     optional_str_none(None);
     optional_str_some(Some("x"));
+    optional_str_some(Some(intern("x")));
+    unintern("x");
+    optional_str_some(Some("x"));
     optional_slice_none(None);
     optional_slice_some(Some(&[1, 2, 3]));
     optional_string_none(None);
@@ -215,10 +218,10 @@ pub fn do_string_roundtrip(s: String) -> String {
 }
 
 #[wasm_bindgen_test]
-fn anyref_heap_live_count() {
-    let x = wasm_bindgen::anyref_heap_live_count();
+fn externref_heap_live_count() {
+    let x = wasm_bindgen::externref_heap_live_count();
     let y = JsValue::null().clone();
-    assert!(wasm_bindgen::anyref_heap_live_count() > x);
+    assert!(wasm_bindgen::externref_heap_live_count() > x);
     drop(y);
-    assert_eq!(x, wasm_bindgen::anyref_heap_live_count());
+    assert_eq!(x, wasm_bindgen::externref_heap_live_count());
 }

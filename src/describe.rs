@@ -37,7 +37,8 @@ tys! {
     REFMUT
     SLICE
     VECTOR
-    ANYREF
+    EXTERNREF
+    NAMED_EXTERNREF
     ENUM
     RUST_STRUCT
     CHAR
@@ -80,10 +81,7 @@ simple! {
     f64 => F64
     bool => BOOLEAN
     char => CHAR
-    JsValue => ANYREF
-    ThisCallback => THIS_CALLBACK
-    ImportedSuperconstructorCallback => SUPERCONSTRUCTOR_CALLBACK
-    ExportedSuperconstructorCallback => SUPERCONSTRUCTOR_CALLBACK
+    JsValue => EXTERNREF
 }
 
 cfg_if! {

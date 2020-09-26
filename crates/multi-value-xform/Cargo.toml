@@ -1,6 +1,6 @@
 [package]
 name = "wasm-bindgen-multi-value-xform"
-version = "0.2.52"
+version = "0.2.68"
 authors = ["The wasm-bindgen Developers"]
 license = "MIT/Apache-2.0"
 repository = "https://github.com/rustwasm/wasm-bindgen/tree/master/crates/multi-value-xform"
@@ -12,5 +12,15 @@ Internal multi-value transformations for wasm-bindgen
 edition = "2018"
 
 [dependencies]
-failure = "0.1"
-walrus = "0.12.0"
+anyhow = "1.0"
+walrus = "0.18.0"
+
+[dev-dependencies]
+rayon = "1.0"
+wasmprinter = "0.2"
+wast = "21.0"
+wat = "1.0"
+
+[[test]]
+name = "all"
+harness = false

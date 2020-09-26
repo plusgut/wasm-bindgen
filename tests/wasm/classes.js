@@ -172,20 +172,50 @@ exports.js_test_option_classes = () => {
   wasm.option_class_assert_some(c);
 };
 
-exports.ExportedClass = class {
-    constructor(...args) {
-        this.super_args = args;
-    }
-}
+/**
+ * Invokes `console.log`, but logs to a string rather than stdout
+ * @param {any} data Data to pass to `console.log`
+ * @returns {string} Output from `console.log`, without color or trailing newlines
+ */
+const console_log_to_string = data => {
+    // Store the original stdout.write and create a console that logs without color
+    const original_write = process.stdout.write;
+    const colorless_console = new console.Console({
+      stdout: process.stdout,
+      colorMode: false
+    });
+    let output = '';
 
-exports.js_exported_class_inheritance = function() {
-    assert.strictEqual(Object.getPrototypeOf(wasm.Child.prototype), wasm.Parent.prototype);
-    assert.strictEqual(Object.getPrototypeOf(wasm.CustomImport.prototype), exports.ExportedClass.prototype);
-    assert.strictEqual(Object.getPrototypeOf(wasm.CustomDate.prototype), Date.prototype);
-}
+    // Change stdout.write to append to our string, then restore the original function
+    process.stdout.write = chunk => output += chunk.trim();
+    colorless_console.log(data);
+    process.stdout.write = original_write;
 
-exports.js_exported_super_constructors = function() {
-    assert.strictEqual(new wasm.Child().get_value(), 123);
-    assert.deepEqual(new wasm.CustomImport().super_args, ["abc", 123, 3.141, null, true]);
-    assert.deepEqual(new wasm.CustomDate("hello"), new Date(2000,0));
-}
+    return output;
+};
+
+exports.js_test_inspectable_classes = () => {
+    const inspectable = wasm.Inspectable.new();
+    const not_inspectable = wasm.NotInspectable.new();
+    // Inspectable classes have a toJSON and toString implementation generated
+    assert.deepStrictEqual(inspectable.toJSON(), { a: inspectable.a });
+    assert.strictEqual(inspectable.toString(), `{"a":${inspectable.a}}`);
+    // Inspectable classes in Node.js have improved console.log formatting as well
+    assert(console_log_to_string(inspectable).endsWith(`{ a: ${inspectable.a} }`));
+    // Non-inspectable classes do not have a toJSON or toString generated
+    assert.strictEqual(not_inspectable.toJSON, undefined);
+    assert.strictEqual(not_inspectable.toString(), '[object Object]');
+    // Non-inspectable classes in Node.js have no special console.log formatting
+    assert.strictEqual(console_log_to_string(not_inspectable), `NotInspectable { ptr: ${not_inspectable.ptr} }`);
+    inspectable.free();
+    not_inspectable.free();
+};
+
+exports.js_test_inspectable_classes_can_override_generated_methods = () => {
+    const overridden_inspectable = wasm.OverriddenInspectable.new();
+    // Inspectable classes can have the generated toJSON and toString overwritten
+    assert.strictEqual(overridden_inspectable.a, 0);
+    assert.deepStrictEqual(overridden_inspectable.toJSON(), 'JSON was overwritten');
+    assert.strictEqual(overridden_inspectable.toString(), 'string was overwritten');
+    overridden_inspectable.free();
+};

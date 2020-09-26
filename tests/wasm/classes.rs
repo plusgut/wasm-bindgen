@@ -30,10 +30,8 @@ extern "C" {
     fn js_return_none2() -> Option<WasmType<OptionClass>>;
     fn js_return_some(a: WasmType<OptionClass>) -> Option<WasmType<OptionClass>>;
     fn js_test_option_classes();
-
-    pub type ExportedClass;
-    fn js_exported_class_inheritance();
-    fn js_exported_super_constructors();
+    fn js_test_inspectable_classes();
+    fn js_test_inspectable_classes_can_override_generated_methods();
 }
 
 #[wasm_bindgen_test]
@@ -548,78 +546,64 @@ mod works_in_module {
     }
 }
 
-#[wasm_bindgen]
-pub struct Parent(u32);
-
-#[wasm_bindgen]
-impl Parent {
-    #[wasm_bindgen(constructor)]
-    pub fn new() -> WasmType<Parent> {
-        instantiate! { Parent(123) }
-    }
-
-    pub fn get_value(&self) -> u32 {
-        self.0
-    }
-}
-
-#[wasm_bindgen(prototype=Parent)]
-pub struct Child {}
-
-#[wasm_bindgen]
-impl Child
-{
-    #[wasm_bindgen(constructor)]
-    pub fn new() -> WasmType<Child> {
-        instantiate! {
-            super();
-            Child {}
-        }
-    }
-}
-
-#[wasm_bindgen(prototype=ExportedClass)]
-pub struct CustomImport {}
-
-#[wasm_bindgen]
-impl CustomImport {
-    #[wasm_bindgen(constructor)]
-    pub fn new() -> WasmType<CustomImport> {
-        instantiate! {
-            super("abc", 123, 3.141, JsValue::NULL, true);
-            CustomImport {}
-        }
-    }
-}
-
-#[wasm_bindgen(prototype=js_sys::Date)]
-pub struct CustomDate {}
-
-#[wasm_bindgen]
-impl CustomDate {
-    #[wasm_bindgen(constructor)]
-    pub fn new(date_string: &str) -> WasmType<CustomDate> {
-        assert_eq!(date_string, "hello".to_string());
-
-        instantiate! {
-            super(2000, 0);
-            CustomDate {}
-        }
-    }
-}
-
-
 #[wasm_bindgen_test]
-fn instantiation() {
-    // wasm_bindgen::WasmWrappedType::<Child>::new(JsValue::NULL);
+fn inspectable_classes() {
+    js_test_inspectable_classes();
+}
+
+#[wasm_bindgen(inspectable)]
+#[derive(Default)]
+pub struct Inspectable {
+    pub a: u32,
+    // This private field will not be exposed unless a getter is provided for it
+    #[allow(dead_code)]
+    private: u32,
+}
+
+#[wasm_bindgen]
+impl Inspectable {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+#[wasm_bindgen]
+#[derive(Default)]
+pub struct NotInspectable {
+    pub a: u32,
+}
+
+#[wasm_bindgen]
+impl NotInspectable {
+    pub fn new() -> Self {
+        Self::default()
+    }
 }
 
 #[wasm_bindgen_test]
-fn inheritance() {
-    js_exported_class_inheritance();
+fn inspectable_classes_can_override_generated_methods() {
+    js_test_inspectable_classes_can_override_generated_methods();
 }
 
-#[wasm_bindgen_test]
-fn super_constructors() {
-    js_exported_super_constructors();
+#[wasm_bindgen(inspectable)]
+#[derive(Default)]
+pub struct OverriddenInspectable {
+    pub a: u32,
+}
+
+#[wasm_bindgen]
+impl OverriddenInspectable {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    #[wasm_bindgen(js_name = toJSON)]
+    pub fn to_json(&self) -> String {
+        String::from("JSON was overwritten")
+    }
+
+    #[wasm_bindgen(js_name = toString)]
+    pub fn to_string(&self) -> String {
+        String::from("string was overwritten")
+    }
 }

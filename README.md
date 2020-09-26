@@ -20,7 +20,7 @@
     <span> | </span>
     <a href="https://github.com/rustwasm/wasm-bindgen/blob/master/CONTRIBUTING.md">Contributing</a>
     <span> | </span>
-    <a href="https://discordapp.com/channels/442252698964721669/443151097398296587">Chat</a>
+    <a href="https://discord.gg/xMZ7CCY">Chat</a>
   </h3>
 
   <sub>Built with 🦀🕸 by <a href="https://rustwasm.github.io/">The Rust and WebAssembly Working Group</a></sub>
@@ -74,7 +74,7 @@ greet("World!");
   unnecessary, promising to unlock even-faster-than-JavaScript DOM access.
 
 [wasm-es-modules]: https://github.com/WebAssembly/esm-integration
-[webidl-bindings]: https://github.com/WebAssembly/webidl-bindings/blob/master/proposals/webidl-bindings/Explainer.md
+[webidl-bindings]: https://github.com/WebAssembly/proposals/issues/8
 
 ## Guide
 
@@ -110,4 +110,4 @@ Unless you explicitly state otherwise, any contribution intentionally submitted
 for inclusion in this project by you, as defined in the Apache-2.0 license,
 shall be dual licensed as above, without any additional terms or conditions.
 
-[contributing]: https://rustwasm.github.io/wasm-bindgen/contributing/index.html
+[contributing]: https://rustwasm.github.io/docs/wasm-bindgen/contributing/index.html

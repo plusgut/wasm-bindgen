@@ -5,17 +5,18 @@ trigger:
       - refs/tags/*
 
 jobs:
+  - job: test_formatting
+    displayName: "Run cargo fmt"
+    steps:
+      - template: ci/azure-install-rust.yml
+      - script: cargo fmt --all -- --check
+
   - job: test_wasm_bindgen
     displayName: "Run wasm-bindgen crate tests (unix)"
     steps:
       - template: ci/azure-install-rust.yml
-        # TODO: switch this back to `stable` when async/await is stable
-        parameters:
-          toolchain: beta
       - template: ci/azure-install-node.yml
       - template: ci/azure-install-geckodriver.yml
-      # Temporarily disable sccache because it is failing on CI.
-      # - template: ci/azure-install-sccache.yml
       - script: cargo test
         displayName: "Builds on native"
       - script: cargo test --target wasm32-unknown-unknown
@@ -34,17 +35,30 @@ jobs:
         displayName: "Futures test suite on wasm"
       - script: cargo test -p wasm-bindgen-multi-value-xform
         displayName: "multi-value xform tests on native"
+      # TODO: re-enable when binary decoding for reference types is updated in
+      # Node.
+      # - script: |
+      #     set -e
+      #     echo "##vso[task.setvariable variable=NODE_ARGS]--experimental-wasm-anyref"
+      #     echo "##vso[task.setvariable variable=WASM_BINDGEN_ANYREF]1"
+      #   displayName: "Configure anyref passes"
+      # - script: cargo test --target wasm32-unknown-unknown --test wasm
+      #   displayName: "(anyref) Crate test suite"
+      # - script: WASM_BINDGEN_NO_DEBUG=1 cargo test --target wasm32-unknown-unknown --test wasm
+      #   displayName: "(anyref) Crate test suite (no debug)"
+      # - script: cargo test --target wasm32-unknown-unknown --features serde-serialize --test wasm
+      #   displayName: "(anyref) Crate test suite (with serde)"
       - script: |
           set -e
-          echo "##vso[task.setvariable variable=NODE_ARGS]--experimental-wasm-anyref"
-          echo "##vso[task.setvariable variable=WASM_BINDGEN_ANYREF]1"
+          echo "##vso[task.setvariable variable=NODE_ARGS]--harmony-weak-refs"
+          echo "##vso[task.setvariable variable=WASM_BINDGEN_WEAKREF]1"
         displayName: "Configure anyref passes"
       - script: cargo test --target wasm32-unknown-unknown --test wasm
-        displayName: "(anyref) Crate test suite"
+        displayName: "(weakref) Crate test suite"
       - script: WASM_BINDGEN_NO_DEBUG=1 cargo test --target wasm32-unknown-unknown --test wasm
-        displayName: "(anyref) Crate test suite (no debug)"
+        displayName: "(weakref) Crate test suite (no debug)"
       - script: cargo test --target wasm32-unknown-unknown --features serde-serialize --test wasm
-        displayName: "(anyref) Crate test suite (with serde)"
+        displayName: "(weakref) Crate test suite (with serde)"
 
   - job: test_wasm_bindgen_windows
     displayName: "Run wasm-bindgen crate tests (Windows)"
@@ -52,13 +66,8 @@ jobs:
       vmImage: vs2017-win2016
     steps:
       - template: ci/azure-install-rust.yml
-        # TODO: switch this back to `stable` when async/await is stable
-        parameters:
-          toolchain: beta
       - template: ci/azure-install-node.yml
       - template: ci/azure-install-geckodriver.yml
-      # Temporarily disable sccache because it is failing on CI.
-      # - template: ci/azure-install-sccache.yml
       - script: cargo test --target wasm32-unknown-unknown
         displayName: "wasm-bindgen test suite"
         env:
@@ -80,103 +89,84 @@ jobs:
         parameters:
           toolchain: nightly
       - template: ci/azure-install-node.yml
-      # Temporarily disable sccache because it is failing on CI.
-      # - template: ci/azure-install-sccache.yml
       - script: cargo test --target wasm32-unknown-unknown --features nightly --test wasm
 
   - job: test_cli
     displayName: "Run wasm-bindgen-cli crate tests"
     steps:
       - template: ci/azure-install-rust.yml
-      # Temporarily disable sccache because it is failing on CI.
-      # - template: ci/azure-install-sccache.yml
       - script: rustup target add wasm32-unknown-unknown
         displayName: "install wasm target"
+      - task: NodeTool@0
+        inputs:
+          versionSpec: '>=13.0'
       - script: cargo test -p wasm-bindgen-cli-support
         displayName: "wasm-bindgen-cli-support tests"
       - script: cargo test -p wasm-bindgen-cli
         displayName: "wasm-bindgen-cli tests"
+      - script: cargo test -p wasm-bindgen-externref-xform
+        displayName: "wasm-bindgen-externref-xform tests"
+      - script: cargo test -p wasm-bindgen-multi-value-xform
+        displayName: "wasm-bindgen-multi-value-xform tests"
+      - script: cargo test -p wasm-bindgen-wasm-interpreter
+        displayName: "wasm-bindgen-wasm-interpreter tests"
 
   - job: test_web_sys
     displayName: "Run web-sys crate tests"
     steps:
       - template: ci/azure-install-rust.yml
-        # TODO: switch this back to `stable` when async/await is stable
-        parameters:
-          toolchain: beta
       - template: ci/azure-install-node.yml
       - template: ci/azure-install-geckodriver.yml
-      # Temporarily disable sccache because it is failing on CI.
-      # - template: ci/azure-install-sccache.yml
       - script: cargo build --manifest-path crates/web-sys/Cargo.toml --target wasm32-unknown-unknown
       - script: cargo build --manifest-path crates/web-sys/Cargo.toml --target wasm32-unknown-unknown --features Node
       - script: cargo build --manifest-path crates/web-sys/Cargo.toml --target wasm32-unknown-unknown --features Element
       - script: cargo build --manifest-path crates/web-sys/Cargo.toml --target wasm32-unknown-unknown --features Window
       - script: cargo test --manifest-path crates/web-sys/Cargo.toml --target wasm32-unknown-unknown --all-features
+      - script: cargo test --manifest-path crates/web-sys/Cargo.toml --target wasm32-unknown-unknown --all-features
+        displayName: "web-sys unstable APIs"
+        env:
+          RUSTFLAGS: --cfg=web_sys_unstable_apis
+
+  - job: check_web_sys
+    displayName: "Verify that web-sys is compiled correctly"
+    steps:
+      - template: ci/azure-install-rust.yml
+      - script: cd crates/web-sys && cargo run --release --package wasm-bindgen-webidl webidls src/features
+      - script: git diff --exit-code
 
   - job: test_js_sys
     displayName: "Run js-sys crate tests"
     steps:
       - template: ci/azure-install-rust.yml
-        # TODO: switch this back to `stable` when async/await is stable
-        parameters:
-          toolchain: beta
       - template: ci/azure-install-node.yml
       - template: ci/azure-install-geckodriver.yml
-      # Temporarily disable sccache because it is failing on CI.
-      # - template: ci/azure-install-sccache.yml
       - script: cargo test -p js-sys --target wasm32-unknown-unknown
 
   - job: test_webidl
     displayName: "Run wasm-bindgen-webidl crate tests"
     steps:
       - template: ci/azure-install-rust.yml
-        # TODO: switch this back to `stable` when async/await is stable
-        parameters:
-          toolchain: beta
       - template: ci/azure-install-node.yml
-      # Temporarily disable sccache because it is failing on CI.
-      # - template: ci/azure-install-sccache.yml
       - script: cargo test -p wasm-bindgen-webidl
       - script: cargo test -p webidl-tests --target wasm32-unknown-unknown
         env:
           WBINDGEN_I_PROMISE_JS_SYNTAX_WORKS_IN_NODE: 1
+      - script: cargo test -p webidl-tests --target wasm32-unknown-unknown
+        displayName: "webidl-tests unstable APIs"
+        env:
+          RUSTFLAGS: --cfg=web_sys_unstable_apis
 
   - job: test_ui
     displayName: "Run UI tests"
     steps:
       - template: ci/azure-install-rust.yml
-        # TODO: switch this back to `stable` when async/await is stable
-        parameters:
-          toolchain: beta
       - template: ci/azure-install-node.yml
-      # Temporarily disable sccache because it is failing on CI.
-      # - template: ci/azure-install-sccache.yml
       - script: cargo test -p wasm-bindgen-macro
-
-  - job: test_wasm_interpreter
-    displayName: "Run wasm-bindgen-wasm-interpreter tests"
-    steps:
-      - template: ci/azure-install-rust.yml
-      # Temporarily disable sccache because it is failing on CI.
-      # - template: ci/azure-install-sccache.yml
-      - script: |
-          git clone https://github.com/WebAssembly/wabt
-          mkdir -p wabt/build
-          cd wabt/build
-          # Temporarily disable sccache because it is failing on CI.
-          # cmake .. -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTS=off -DCMAKE_CXX_COMPILER_LAUNCHER=$RUSTC_WRAPPER
-          cmake .. -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTS=off
-          cmake --build . -- -j$(nproc)
-          echo "##vso[task.prependpath]$PWD"
-      - script: cargo test -p wasm-bindgen-wasm-interpreter
 
   - job: test_typescript_output
     displayName: "Test TypeScript output of wasm-bindgen"
     steps:
       - template: ci/azure-install-rust.yml
-      # Temporarily disable sccache because it is failing on CI.
-      # - template: ci/azure-install-sccache.yml
       - template: ci/azure-install-node.yml
       - script: cd crates/typescript-tests && ./run.sh
 
@@ -184,16 +174,11 @@ jobs:
     displayName: "Build almost all examples"
     steps:
       - template: ci/azure-install-rust.yml
-        # TODO: switch this back to `stable` when async/await is stable
-        parameters:
-          toolchain: beta
-      # Temporarily disable sccache because it is failing on CI.
-      # - template: ci/azure-install-sccache.yml
       - template: ci/azure-install-wasm-pack.yml
       - script: mv _package.json package.json && npm install && rm package.json
         displayName: "run npm install"
       - script: |
-          for dir in `ls examples | grep -v README | grep -v asm.js | grep -v raytrace | grep -v without-a-bundler | grep -v websockets`; do
+          for dir in `ls examples | grep -v README | grep -v asm.js | grep -v raytrace | grep -v without-a-bundler | grep -v websockets | grep -v webxr | grep -v deno`; do
             (cd examples/$dir &&
             ln -fs ../../node_modules . &&
             npm run build -- --output-path $BUILD_ARTIFACTSTAGINGDIRECTORY/exbuild/$dir) || exit 1;
@@ -204,14 +189,22 @@ jobs:
           artifactName: examples1
           targetPath: '$(Build.ArtifactStagingDirectory)'
 
+  - job: test_deno
+    displayName: "Build and test the deno example"
+    steps:
+      - template: ci/azure-install-rust.yml
+      - script: rustup target add wasm32-unknown-unknown
+        displayName: "install wasm target"
+      - template: ci/azure-install-deno.yml
+      - script: cd examples/deno && ./build.sh && $HOME/.deno/bin/deno run --allow-read test.ts
+        displayName: "build and run deno example"
+
   - job: build_raytrace
     displayName: "Build raytrace examples"
     steps:
       - template: ci/azure-install-rust.yml
         parameters:
-          toolchain: nightly-2019-09-26
-      # Temporarily disable sccache because it is failing on CI.
-      # - template: ci/azure-install-sccache.yml
+          toolchain: nightly-2020-08-27
       - script: rustup component add rust-src
         displayName: "install rust-src"
       - script: |
@@ -229,16 +222,12 @@ jobs:
     displayName: "Build benchmarks"
     steps:
       - template: ci/azure-install-rust.yml
-        # TODO: switch this back to `stable` when async/await is stable
-        parameters:
-          toolchain: beta
-      # Temporarily disable sccache because it is failing on CI.
-      # - template: ci/azure-install-sccache.yml
-      - template: ci/azure-install-wasm-pack.yml
-      - script: wasm-pack build --target web benchmarks
+      - script: rustup target add wasm32-unknown-unknown
+        displayName: "add target"
+      - script: cargo build --manifest-path benchmarks/Cargo.toml --release --target wasm32-unknown-unknown
         displayName: "build benchmarks"
-      - script: rm -f benchmarks/pkg/.gitignore
-        displayName: "remove stray gitignore"
+      - script: cargo run -p wasm-bindgen-cli target/wasm32-unknown-unknown/release/wasm_bindgen_benchmark.wasm --out-dir benchmarks/pkg --target web
+        displayName: "run wasm-bindgen"
       - task: PublishPipelineArtifact@0
         inputs:
           artifactName: benchmarks
@@ -248,8 +237,6 @@ jobs:
     displayName: "Dist Linux binary"
     steps:
       - template: ci/azure-install-rust.yml
-      # Temporarily disable sccache because it is failing on CI.
-      # - template: ci/azure-install-sccache.yml
       - script: rustup target add x86_64-unknown-linux-musl
       - script: |
           sudo apt update -y
@@ -269,11 +256,9 @@ jobs:
   - job: dist_darwin
     displayName: "Dist Darwin binary"
     pool:
-      vmImage: macOS-10.13
+      vmImage: macOS-10.15
     steps:
       - template: ci/azure-install-rust.yml
-      # Temporarily disable sccache because it is failing on CI.
-      # - template: ci/azure-install-sccache.yml
       - script: cargo build --manifest-path crates/cli/Cargo.toml --release
         env:
           MACOSX_DEPLOYMENT_TARGET: 10.7
@@ -287,17 +272,12 @@ jobs:
       vmImage: vs2017-win2016
     steps:
       - template: ci/azure-install-rust.yml
-      # Temporarily disable sccache because it is failing on CI.
-      # - template: ci/azure-install-sccache.yml
       - script: cargo build --manifest-path crates/cli/Cargo.toml --release
         env:
           RUSTFLAGS: -Ctarget-feature=+crt-static
       - template: ci/azure-create-tarball.yml
         parameters:
           name: dist_windows
-      # Temporarily disable sccache because it is failing on CI.
-      # - script: "%RUSTC_WRAPPER% -s"
-      # - script: cat sccache.log
 
   - job: doc_book
     displayName: "Doc - build the book"
@@ -317,14 +297,8 @@ jobs:
     displayName: "Doc - build the API documentation"
     steps:
       - template: ci/azure-install-rust.yml
-        # TODO: switch this back to `stable` when async/await is stable
         parameters:
-          toolchain: beta
-      # Install rustfmt so we can format the web-sys bindings
-      - script: rustup component add rustfmt
-        displayName: "Install rustfmt"
-      # Temporarily disable sccache because it is failing on CI.
-      # - template: ci/azure-install-sccache.yml
+          toolchain: nightly
       - script: cargo doc --no-deps --features 'nightly serde-serialize'
         displayName: "Document wasm-bindgen"
       - script: cargo doc --no-deps --manifest-path crates/js-sys/Cargo.toml
@@ -332,7 +306,7 @@ jobs:
       - script: cargo doc --no-deps --manifest-path crates/web-sys/Cargo.toml --all-features
         displayName: "Document web-sys"
         env:
-          WEBIDL_RUSTFMT_BINDINGS: 0
+          RUSTDOCFLAGS: --cfg=web_sys_unstable_apis
       - script: cargo doc --no-deps --manifest-path crates/futures/Cargo.toml
         displayName: "Document wasm-bindgen-futures"
       # Make a tarball even though a zip is uploaded, it looks like the tarball

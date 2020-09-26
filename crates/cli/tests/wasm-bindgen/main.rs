@@ -135,6 +135,34 @@ fn works_on_empty_project() {
     cmd.assert().success();
 }
 
+#[test]
+fn namespace_global_and_noglobal_works() {
+    let (mut cmd, _out_dir) = Project::new("namespace_global_and_noglobal_works")
+        .file(
+            "src/lib.rs",
+            r#"
+                use wasm_bindgen::prelude::*;
+                #[wasm_bindgen(module = "fs")]
+                extern "C" {
+                    #[wasm_bindgen(js_namespace = window)]
+                    fn t1();
+                }
+                #[wasm_bindgen]
+                extern "C" {
+                    #[wasm_bindgen(js_namespace = window)]
+                    fn t2();
+                }
+                #[wasm_bindgen]
+                pub fn test() {
+                    t1();
+                    t2();
+                }
+            "#,
+        )
+        .wasm_bindgen("");
+    cmd.assert().success();
+}
+
 mod npm;
 
 #[test]
@@ -146,6 +174,207 @@ fn one_export_works() {
                 use wasm_bindgen::prelude::*;
                 #[wasm_bindgen]
                 pub fn foo() {}
+            "#,
+        )
+        .wasm_bindgen("");
+    cmd.assert().success();
+}
+
+#[test]
+fn bin_crate_works() {
+    let (mut cmd, out_dir) = Project::new("bin_crate_works")
+        .file(
+            "src/main.rs",
+            r#"
+                use wasm_bindgen::prelude::*;
+                #[wasm_bindgen]
+                extern "C" {
+                    #[wasm_bindgen(js_namespace = console)]
+                    fn log(data: &str);
+                }
+
+                fn main() {
+                    log("hello, world");
+                }
+            "#,
+        )
+        .file(
+            "Cargo.toml",
+            &format!(
+                "
+                    [package]
+                    name = \"bin_crate_works\"
+                    authors = []
+                    version = \"1.0.0\"
+                    edition = '2018'
+
+                    [dependencies]
+                    wasm-bindgen = {{ path = '{}' }}
+
+                    [workspace]
+                ",
+                repo_root().display(),
+            ),
+        )
+        .wasm_bindgen("--target nodejs");
+    cmd.assert().success();
+    Command::new("node")
+        .arg("bin_crate_works.js")
+        .current_dir(out_dir)
+        .assert()
+        .success()
+        .stdout("hello, world\n");
+}
+
+#[test]
+fn empty_interface_types() {
+    let (mut cmd, _out_dir) = Project::new("empty_interface_types")
+        .file(
+            "src/lib.rs",
+            r#"
+                #[no_mangle]
+                pub extern fn foo() {}
+            "#,
+        )
+        .file(
+            "Cargo.toml",
+            &format!(
+                "
+                    [package]
+                    name = \"empty_interface_types\"
+                    authors = []
+                    version = \"1.0.0\"
+                    edition = '2018'
+
+                    [dependencies]
+                    wasm-bindgen = {{ path = '{}' }}
+
+                    [lib]
+                    crate-type = ['cdylib']
+
+                    [workspace]
+                ",
+                repo_root().display(),
+            ),
+        )
+        .wasm_bindgen("");
+    cmd.env("WASM_INTERFACE_TYPES", "1");
+    cmd.assert().success();
+}
+
+#[test]
+fn bad_interface_types_export() -> anyhow::Result<()> {
+    let (mut cmd, _out_dir) = Project::new("bad_interface_types_export")
+        .file(
+            "src/lib.rs",
+            r#"
+                use wasm_bindgen::prelude::*;
+
+                #[wasm_bindgen]
+                pub fn foo(a: Vec<u8>) {}
+            "#,
+        )
+        .file(
+            "Cargo.toml",
+            &format!(
+                "
+                    [package]
+                    name = \"bad_interface_types_export\"
+                    authors = []
+                    version = \"1.0.0\"
+                    edition = '2018'
+
+                    [lib]
+                    crate-type = [\"cdylib\"]
+
+                    [dependencies]
+                    wasm-bindgen = {{ path = '{}' }}
+
+                    [workspace]
+                ",
+                repo_root().display(),
+            ),
+        )
+        .wasm_bindgen("");
+    cmd.env("WASM_INTERFACE_TYPES", "1");
+    cmd.assert().failure().code(1).stderr(str::is_match(
+        "\
+error: failed to generate a standard interface types section
+
+Caused by:
+    0: in function export `foo`
+    1: type Vector\\(U8\\) isn't supported in standard interface types
+$",
+    )?);
+    Ok(())
+}
+
+#[test]
+fn bad_interface_types_import() -> anyhow::Result<()> {
+    let (mut cmd, _out_dir) = Project::new("bad_interface_types_import")
+        .file(
+            "src/lib.rs",
+            r#"
+                use wasm_bindgen::prelude::*;
+
+                #[wasm_bindgen]
+                extern "C" {
+                    pub fn foo() -> Vec<u8>;
+                }
+
+                #[wasm_bindgen]
+                pub fn bar() {
+                    foo();
+                }
+            "#,
+        )
+        .file(
+            "Cargo.toml",
+            &format!(
+                "
+                    [package]
+                    name = \"bad_interface_types_import\"
+                    authors = []
+                    version = \"1.0.0\"
+                    edition = '2018'
+
+                    [lib]
+                    crate-type = [\"cdylib\"]
+
+                    [dependencies]
+                    wasm-bindgen = {{ path = '{}' }}
+
+                    [workspace]
+                ",
+                repo_root().display(),
+            ),
+        )
+        .wasm_bindgen("");
+    cmd.env("WASM_INTERFACE_TYPES", "1");
+    cmd.assert().failure().code(1).stderr(str::is_match(
+        "\
+error: failed to generate a standard interface types section
+
+Caused by:
+    0: in adapter function
+    1: import of global `foo` requires JS glue
+$",
+    )?);
+    Ok(())
+}
+
+#[test]
+fn function_table_preserved() {
+    let (mut cmd, _out_dir) = Project::new("function_table_preserved")
+        .file(
+            "src/lib.rs",
+            r#"
+                use wasm_bindgen::prelude::*;
+
+                #[wasm_bindgen]
+                pub fn bar() {
+                    Closure::wrap(Box::new(|| {}) as Box<dyn Fn()>);
+                }
             "#,
         )
         .wasm_bindgen("");

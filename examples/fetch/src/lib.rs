@@ -33,15 +33,14 @@ pub struct Signature {
 }
 
 #[wasm_bindgen]
-pub async fn run() -> Result<JsValue, JsValue> {
+pub async fn run(repo: String) -> Result<JsValue, JsValue> {
     let mut opts = RequestInit::new();
     opts.method("GET");
     opts.mode(RequestMode::Cors);
 
-    let request = Request::new_with_str_and_init(
-        "https://api.github.com/repos/rustwasm/wasm-bindgen/branches/master",
-        &opts,
-    )?;
+    let url = format!("https://api.github.com/repos/{}/branches/master", repo);
+
+    let request = Request::new_with_str_and_init(&url, &opts)?;
 
     request
         .headers()

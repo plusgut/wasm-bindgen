@@ -13,7 +13,7 @@ macro_rules! intrinsics {
     (pub enum Intrinsic {
         $(
             #[symbol = $sym:tt]
-            #[signature = fn($($arg:expr),*) -> $ret:ident]
+            #[signature = fn($($arg:expr),*) -> $ret:expr]
             $name:ident,
         )*
     }) => {
@@ -36,7 +36,7 @@ macro_rules! intrinsics {
 
             /// Returns the expected signature of this intrinsic, used for
             /// generating a JS shim.
-            pub fn binding(&self) -> Function {
+            pub fn signature(&self) -> Function {
                 use crate::descriptor::Descriptor::*;
                 match self {
                     $(
@@ -63,124 +63,107 @@ macro_rules! intrinsics {
     };
 }
 
-fn ref_anyref() -> Descriptor {
-    Descriptor::Ref(Box::new(Descriptor::Anyref))
+fn ref_externref() -> Descriptor {
+    Descriptor::Ref(Box::new(Descriptor::Externref))
 }
 
 fn ref_string() -> Descriptor {
     Descriptor::Ref(Box::new(Descriptor::String))
 }
 
-fn ref_slice_anyref() -> Descriptor {
-    Descriptor::Ref(Box::new(Descriptor::Slice(Box::new(Descriptor::Anyref))))
+fn opt_string() -> Descriptor {
+    Descriptor::Option(Box::new(Descriptor::String))
+}
+
+fn opt_f64() -> Descriptor {
+    Descriptor::Option(Box::new(Descriptor::F64))
 }
 
 intrinsics! {
     pub enum Intrinsic {
         #[symbol = "__wbindgen_jsval_eq"]
-        #[signature = fn(ref_anyref(), ref_anyref()) -> Boolean]
+        #[signature = fn(ref_externref(), ref_externref()) -> Boolean]
         JsvalEq,
         #[symbol = "__wbindgen_is_function"]
-        #[signature = fn(ref_anyref()) -> Boolean]
+        #[signature = fn(ref_externref()) -> Boolean]
         IsFunction,
         #[symbol = "__wbindgen_is_undefined"]
-        #[signature = fn(ref_anyref()) -> Boolean]
+        #[signature = fn(ref_externref()) -> Boolean]
         IsUndefined,
         #[symbol = "__wbindgen_is_null"]
-        #[signature = fn(ref_anyref()) -> Boolean]
+        #[signature = fn(ref_externref()) -> Boolean]
         IsNull,
         #[symbol = "__wbindgen_is_object"]
-        #[signature = fn(ref_anyref()) -> Boolean]
+        #[signature = fn(ref_externref()) -> Boolean]
         IsObject,
         #[symbol = "__wbindgen_is_symbol"]
-        #[signature = fn(ref_anyref()) -> Boolean]
+        #[signature = fn(ref_externref()) -> Boolean]
         IsSymbol,
         #[symbol = "__wbindgen_is_string"]
-        #[signature = fn(ref_anyref()) -> Boolean]
+        #[signature = fn(ref_externref()) -> Boolean]
         IsString,
         #[symbol = "__wbindgen_is_falsy"]
-        #[signature = fn(ref_anyref()) -> Boolean]
+        #[signature = fn(ref_externref()) -> Boolean]
         IsFalsy,
         #[symbol = "__wbindgen_object_clone_ref"]
-        #[signature = fn(ref_anyref()) -> Anyref]
+        #[signature = fn(ref_externref()) -> Externref]
         ObjectCloneRef,
         #[symbol = "__wbindgen_object_drop_ref"]
-        #[signature = fn(Anyref) -> Unit]
+        #[signature = fn(Externref) -> Unit]
         ObjectDropRef,
         #[symbol = "__wbindgen_cb_drop"]
-        #[signature = fn(Anyref) -> Boolean]
+        #[signature = fn(Externref) -> Boolean]
         CallbackDrop,
-        #[symbol = "__wbindgen_cb_forget"]
-        #[signature = fn(Anyref) -> Unit]
-        CallbackForget,
         #[symbol = "__wbindgen_number_new"]
-        #[signature = fn(F64) -> Anyref]
+        #[signature = fn(F64) -> Externref]
         NumberNew,
         #[symbol = "__wbindgen_string_new"]
-        #[signature = fn(ref_string()) -> Anyref]
+        #[signature = fn(ref_string()) -> Externref]
         StringNew,
         #[symbol = "__wbindgen_symbol_anonymous_new"]
-        #[signature = fn() -> Anyref]
+        #[signature = fn() -> Externref]
         SymbolAnonymousNew,
         #[symbol = "__wbindgen_symbol_named_new"]
-        #[signature = fn(ref_string()) -> Anyref]
+        #[signature = fn(ref_string()) -> Externref]
         SymbolNamedNew,
         #[symbol = "__wbindgen_number_get"]
-        #[signature = fn(ref_anyref(), I32) -> F64]
+        #[signature = fn(ref_externref()) -> opt_f64()]
         NumberGet,
         #[symbol = "__wbindgen_string_get"]
-        #[signature = fn(ref_anyref(), I32) -> I32]
+        #[signature = fn(ref_externref()) -> opt_string()]
         StringGet,
         #[symbol = "__wbindgen_boolean_get"]
-        #[signature = fn(ref_anyref()) -> I32]
+        #[signature = fn(ref_externref()) -> I32]
         BooleanGet,
         #[symbol = "__wbindgen_throw"]
         #[signature = fn(ref_string()) -> Unit]
         Throw,
         #[symbol = "__wbindgen_rethrow"]
-        #[signature = fn(Anyref) -> Unit]
+        #[signature = fn(Externref) -> Unit]
         Rethrow,
         #[symbol = "__wbindgen_memory"]
-        #[signature = fn() -> Anyref]
+        #[signature = fn() -> Externref]
         Memory,
         #[symbol = "__wbindgen_module"]
-        #[signature = fn() -> Anyref]
+        #[signature = fn() -> Externref]
         Module,
         #[symbol = "__wbindgen_function_table"]
-        #[signature = fn() -> Anyref]
+        #[signature = fn() -> Externref]
         FunctionTable,
         #[symbol = "__wbindgen_debug_string"]
-        #[signature = fn(ref_anyref()) -> String]
+        #[signature = fn(ref_externref()) -> String]
         DebugString,
         #[symbol = "__wbindgen_json_parse"]
-        #[signature = fn(ref_string()) -> Anyref]
+        #[signature = fn(ref_string()) -> Externref]
         JsonParse,
         #[symbol = "__wbindgen_json_serialize"]
-        #[signature = fn(ref_anyref()) -> String]
+        #[signature = fn(ref_externref()) -> String]
         JsonSerialize,
-        #[symbol = "__wbindgen_anyref_heap_live_count"]
+        #[symbol = "__wbindgen_externref_heap_live_count"]
         #[signature = fn() -> I32]
-        AnyrefHeapLiveCount,
-        #[symbol = "__wbindgen_init_anyref_table"]
+        ExternrefHeapLiveCount,
+        #[symbol = "__wbindgen_init_externref_table"]
         #[signature = fn() -> Unit]
-        InitAnyrefTable,
-        #[symbol = "__wbindgen_export_get"]
-        #[signature = fn(U64) -> Anyref]
-        ExportGet,
-        #[symbol = "__wbindgen_instantiate"]
-        #[signature = fn(ref_anyref(), ref_slice_anyref()) -> U32]
-        Instantiate,
-        #[symbol = "__wbindgen_invoke"]
-        #[signature = fn(ref_anyref(), ref_slice_anyref()) -> U32]
-        Invoke,
-        #[symbol = "__wbindgen_wasm_pointer_get"]
-        #[signature = fn(ref_anyref()) -> U32]
-        WasmPointerGet,
-        #[symbol = "__wbindgen_wasm_pointer_set"]
-        #[signature = fn(ref_anyref(), U32) -> Unit]
-        WasmPointerSet,
-        #[symbol = "__wbindgen_set_heapref_state"]
-        #[signature = fn(U32, Boolean) -> Unit]
-        SetHeaprefState,
+        InitExternrefTable,
     }
 }

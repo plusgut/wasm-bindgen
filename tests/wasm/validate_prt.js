@@ -30,7 +30,14 @@ const methodMoved = () => {
 };
 
 exports.js_works = () => {
-    // useMoved();
-    // moveMoved();
-    // methodMoved();
+    useMoved();
+    moveMoved();
+    methodMoved();
+
+    const a = new wasm.Fruit('a');
+    a.prop;
+    assertMovedPtrThrows(() => a.prop);
+    const b = new wasm.Fruit('a');
+    b.prop = 3;
+    assertMovedPtrThrows(() => { b.prop = 4; });
 };

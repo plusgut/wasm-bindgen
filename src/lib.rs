@@ -6,6 +6,7 @@
 //! interface.
 
 #![no_std]
+#![allow(coherence_leak_check)]
 #![doc(html_root_url = "https://docs.rs/wasm-bindgen/0.2")]
 #![cfg_attr(feature = "nightly", feature(unsize))]
 
@@ -15,10 +16,7 @@ use core::mem;
 use core::ops::{Deref, DerefMut};
 use proc_macro_hack::proc_macro_hack;
 
-#[proc_macro_hack(fake_call_site)]
-pub use wasm_bindgen_macro::instantiate;
-
-use crate::convert::{IntoWasmAbi, FromWasmAbi};
+use crate::convert::{FromWasmAbi, WasmOptionalF64, WasmSlice};
 
 macro_rules! if_std {
     ($($i:item)*) => ($(
@@ -72,10 +70,10 @@ if_std! {
     extern crate std;
     use std::prelude::v1::*;
     pub mod closure;
-    mod anyref;
+    mod externref;
 
     mod cache;
-    pub use cache::intern::intern;
+    pub use cache::intern::{intern, unintern};
 }
 
 /// Representation of an object owned by JS.
@@ -259,10 +257,8 @@ impl JsValue {
         T: for<'a> serde::de::Deserialize<'a>,
     {
         unsafe {
-            let mut ret = [0usize; 2];
-            __wbindgen_json_serialize(&mut ret, self.idx);
-            let s = Vec::from_raw_parts(ret[0] as *mut u8, ret[1], ret[1]);
-            let s = String::from_utf8_unchecked(s);
+            let ret = __wbindgen_json_serialize(self.idx);
+            let s = String::from_abi(ret);
             serde_json::from_str(&s)
         }
     }
@@ -273,15 +269,7 @@ impl JsValue {
     /// If this JS value is not an instance of a number then this returns
     /// `None`.
     pub fn as_f64(&self) -> Option<f64> {
-        let mut invalid = 0;
-        unsafe {
-            let ret = __wbindgen_number_get(self.idx, &mut invalid);
-            if invalid == 1 {
-                None
-            } else {
-                Some(ret)
-            }
-        }
+        unsafe { FromWasmAbi::from_abi(__wbindgen_number_get(self.idx)) }
     }
 
     /// Tests whether this JS value is a JS string.
@@ -311,16 +299,7 @@ impl JsValue {
     /// [caveats]: https://rustwasm.github.io/docs/wasm-bindgen/reference/types/str.html
     #[cfg(feature = "std")]
     pub fn as_string(&self) -> Option<String> {
-        unsafe {
-            let mut len = 0;
-            let ptr = __wbindgen_string_get(self.idx, &mut len);
-            if ptr.is_null() {
-                None
-            } else {
-                let data = Vec::from_raw_parts(ptr, len, len);
-                Some(String::from_utf8_unchecked(data))
-            }
-        }
+        unsafe { FromWasmAbi::from_abi(__wbindgen_string_get(self.idx)) }
     }
 
     /// Returns the `bool` value of this JS value if it's an instance of a
@@ -546,7 +525,7 @@ externs! {
         fn __wbindgen_symbol_named_new(ptr: *const u8, len: usize) -> u32;
         fn __wbindgen_symbol_anonymous_new() -> u32;
 
-        fn __wbindgen_anyref_heap_live_count() -> u32;
+        fn __wbindgen_externref_heap_live_count() -> u32;
 
         fn __wbindgen_is_null(idx: u32) -> u32;
         fn __wbindgen_is_undefined(idx: u32) -> u32;
@@ -556,9 +535,9 @@ externs! {
         fn __wbindgen_is_string(idx: u32) -> u32;
         fn __wbindgen_is_falsy(idx: u32) -> u32;
 
-        fn __wbindgen_number_get(idx: u32, invalid: *mut u8) -> f64;
+        fn __wbindgen_number_get(idx: u32) -> WasmOptionalF64;
         fn __wbindgen_boolean_get(idx: u32) -> u32;
-        fn __wbindgen_string_get(idx: u32, len: *mut usize) -> *mut u8;
+        fn __wbindgen_string_get(idx: u32) -> WasmSlice;
 
         fn __wbindgen_debug_string(ret: *mut [usize; 2], idx: u32) -> ();
 
@@ -566,13 +545,12 @@ externs! {
         fn __wbindgen_rethrow(a: u32) -> !;
 
         fn __wbindgen_cb_drop(idx: u32) -> u32;
-        fn __wbindgen_cb_forget(idx: u32) -> ();
 
         fn __wbindgen_describe(v: u32) -> ();
         fn __wbindgen_describe_closure(a: u32, b: u32, c: u32) -> u32;
 
         fn __wbindgen_json_parse(ptr: *const u8, len: usize) -> u32;
-        fn __wbindgen_json_serialize(ret: *mut [usize; 2], idx: u32) -> ();
+        fn __wbindgen_json_serialize(idx: u32) -> WasmSlice;
         fn __wbindgen_jsval_eq(a: u32, b: u32) -> u32;
 
         fn __wbindgen_memory() -> u32;
@@ -717,7 +695,7 @@ pub fn throw_val(s: JsValue) -> ! {
     }
 }
 
-/// Get the count of live `anyref`s / `JsValue`s in `wasm-bindgen`'s heap.
+/// Get the count of live `externref`s / `JsValue`s in `wasm-bindgen`'s heap.
 ///
 /// ## Usage
 ///
@@ -729,7 +707,7 @@ pub fn throw_val(s: JsValue) -> ! {
 /// * get an initial live count,
 ///
 /// * perform some series of operations or function calls that should clean up
-///   after themselves, and should not keep holding onto `anyref`s / `JsValue`s
+///   after themselves, and should not keep holding onto `externref`s / `JsValue`s
 ///   after completion,
 ///
 /// * get the final live count,
@@ -738,8 +716,8 @@ pub fn throw_val(s: JsValue) -> ! {
 ///
 /// ## What is Counted
 ///
-/// Note that this only counts the *owned* `anyref`s / `JsValue`s that end up in
-/// `wasm-bindgen`'s heap. It does not count borrowed `anyref`s / `JsValue`s
+/// Note that this only counts the *owned* `externref`s / `JsValue`s that end up in
+/// `wasm-bindgen`'s heap. It does not count borrowed `externref`s / `JsValue`s
 /// that are on its stack.
 ///
 /// For example, these `JsValue`s are accounted for:
@@ -748,7 +726,7 @@ pub fn throw_val(s: JsValue) -> ! {
 /// #[wasm_bindgen]
 /// pub fn my_function(this_is_counted: JsValue) {
 ///     let also_counted = JsValue::from_str("hi");
-///     assert!(wasm_bindgen::anyref_heap_live_count() >= 2);
+///     assert!(wasm_bindgen::externref_heap_live_count() >= 2);
 /// }
 /// ```
 ///
@@ -761,8 +739,13 @@ pub fn throw_val(s: JsValue) -> ! {
 ///     // ...
 /// }
 /// ```
+pub fn externref_heap_live_count() -> u32 {
+    unsafe { __wbindgen_externref_heap_live_count() }
+}
+
+#[doc(hidden)]
 pub fn anyref_heap_live_count() -> u32 {
-    unsafe { __wbindgen_anyref_heap_live_count() }
+    externref_heap_live_count()
 }
 
 /// An extension trait for `Option<T>` and `Result<T, E>` for unwraping the `T`
@@ -860,9 +843,9 @@ pub fn function_table() -> JsValue {
 
 #[doc(hidden)]
 pub mod __rt {
+    use crate::JsValue;
     use core::cell::{Cell, UnsafeCell};
     use core::ops::{Deref, DerefMut};
-    use crate::JsValue;
 
     pub extern crate core;
     #[cfg(feature = "std")]
@@ -1175,7 +1158,7 @@ pub mod __rt {
     ///
     /// Ideas for how to improve this are most welcome!
     pub fn link_mem_intrinsics() {
-        crate::anyref::link_intrinsics();
+        crate::externref::link_intrinsics();
     }
 
     static mut GLOBAL_EXNDATA: [u32; 2] = [0; 2];
@@ -1234,6 +1217,26 @@ pub mod __rt {
             match self {
                 Ok(()) => Ok(JsValue::undefined()),
                 Err(e) => Err(e.into()),
+            }
+        }
+    }
+
+    /// An internal helper trait for usage in `#[wasm_bindgen(start)]`
+    /// functions to throw the error (if it is `Err`).
+    pub trait Start {
+        fn start(self);
+    }
+
+    impl Start for () {
+        #[inline]
+        fn start(self) {}
+    }
+
+    impl<E: Into<JsValue>> Start for Result<(), E> {
+        #[inline]
+        fn start(self) {
+            if let Err(e) = self {
+                crate::throw_val(e.into());
             }
         }
     }
